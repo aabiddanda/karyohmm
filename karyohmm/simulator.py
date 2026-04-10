@@ -6,6 +6,7 @@ from scipy.stats import (
     betabinom,
     binom,
     norm,
+    lognorm,
     poisson,
     randint,
     rv_histogram,
@@ -19,8 +20,8 @@ class PGTSimBase:
 
     def __init__(self):
         """Initialize the PGT-A Simulator."""
-        # NOTE: the initial SDs are derived from the PENNCNV source code - but scaled
-        self.lrr_mu = {0: -3.527211, 1: np.log2(0.5), 2: np.log2(1.0), 3: np.log2(1.5)}
+        # NOTE: the initial SDs are derived from the PENNCNV source code - but can be scaled effectively
+        self.lrr_mu = {0: -3.527211, 1: np.log2(0.5), 2: 0.0, 3: np.log2(1.5)}
         self.lrr_sd = {0: 1.329152, 1: 0.284338, 2: 0.159645, 3: 0.209089}
 
     def draw_parental_genotypes(self, afs=None, m=100, seed=42):
@@ -441,18 +442,22 @@ class PGTSimBase:
                     baf[i] = truncnorm.rvs(a, b, loc=mu_i, scale=std_dev)
         return true_geno, baf
 
-    def sim_logR_ratio(self, mat_hap, pat_hap, ploidy=2, alpha=1.0, seed=42):
+    def sim_logR_ratio(self, mat_hap, pat_hap, ploidy=2, alpha=0.5, seed=42):
         """Simulate logR-ratio conditional on ploidy.
 
         Alpha is the degree to which the variance is increased for the LRR.
         """
         assert seed > 0
         assert ploidy in [0, 1, 2, 3]
+        assert alpha > 0
         assert mat_hap.size == pat_hap.size
         np.random.seed(seed)
         m = mat_hap.size
-        lrr = norm.rvs(self.lrr_mu[ploidy], scale=self.lrr_sd[ploidy] * alpha, size=m)
-        return lrr
+        # Actually simulate per-variant noise in LRR and varying
+        alphas = lognorm.rvs(s=alpha, scale=1.0, size=m)
+        sigmas = self.lrr_sd[ploidy] * np.sqrt(alphas)
+        lrr = norm.rvs(self.lrr_mu[ploidy], scale=sigmas, size=m)
+        return lrr, sigmas
 
     def sim_read_counts(
         self, mat_hap, pat_hap, ploidy, coverage=1.0, a=10.0, b=10.0, eps=1e-2, seed=42
@@ -619,6 +624,7 @@ class PGTSim(PGTSimBase):
             )
             baf = None
             lrr = None
+            sigmas = None
             assert geno.size == m
             assert alt_reads.size == m
             assert ref_reads.size == m
@@ -631,7 +637,7 @@ class PGTSim(PGTSimBase):
                 mix_prop=mix_prop,
                 seed=seed,
             )
-            lrr = self.sim_logR_ratio(
+            lrr, sigmas = self.sim_logR_ratio(
                 mat_hap1, pat_hap1, ploidy=ploidy, alpha=alpha, seed=seed
             )
             alt_reads = None
@@ -651,6 +657,7 @@ class PGTSim(PGTSimBase):
             "geno_embryo": geno,
             "baf": baf,
             "lrr": lrr,
+            "sigmas": sigmas,
             "alt_reads": alt_reads,
             "ref_reads": ref_reads,
             "pos": pos,
@@ -743,6 +750,7 @@ class PGTSim(PGTSimBase):
                 )
                 baf = None
                 lrr = None
+                sigmas = None
                 assert geno.size == m
                 assert alt_reads.size == m
                 assert ref_reads.size == m
@@ -755,7 +763,7 @@ class PGTSim(PGTSimBase):
                     mix_prop=mix_prop,
                     seed=seed + i,
                 )
-                lrr = self.sim_logR_ratio(
+                lrr, sigmas = self.sim_logR_ratio(
                     mat_hap1, pat_hap1, ploidy=ploidy, alpha=alpha, seed=seed
                 )
                 alt_reads = None
@@ -764,6 +772,7 @@ class PGTSim(PGTSimBase):
                 assert baf.size == m
             res_table[f"baf_embryo{i}"] = baf
             res_table[f"lrr_embryo{i}"] = lrr
+            res_table[f"sigma_embryo{i}"] = sigmas
             res_table[f"geno_embryo{i}"] = geno
             res_table[f"alt_reads{i}"] = alt_reads
             res_table[f"ref_reads{i}"] = ref_reads
@@ -783,7 +792,7 @@ class PGTSim(PGTSimBase):
         mat_skew=0.5,
         std_dev=0.15,
         mix_prop=0.3,
-        alpha=1.0,
+        alpha=0.5,
         coverage=5.0,
         a=10.0,
         b=10.0,
@@ -820,6 +829,7 @@ class PGTSim(PGTSimBase):
             )
             baf = None
             lrr = None
+            sigmas = None
             assert geno.size == pos.size
             assert alt_reads.size == pos.size
             assert ref_reads.size == pos.size
@@ -832,7 +842,7 @@ class PGTSim(PGTSimBase):
                 mix_prop=mix_prop,
                 seed=seed,
             )
-            lrr = self.sim_logR_ratio(
+            lrr, sigmas = self.sim_logR_ratio(
                 mat_hap1, pat_hap1, ploidy=ploidy, alpha=alpha, seed=seed
             )
             alt_reads = None
@@ -851,6 +861,7 @@ class PGTSim(PGTSimBase):
             "geno_embryo": geno,
             "baf": baf,
             "lrr": lrr,
+            "sigmas": sigmas,
             "alt_reads": alt_reads,
             "ref_reads": ref_reads,
             "pos": pos,

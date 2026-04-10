@@ -5,7 +5,7 @@ import logging
 import rich_click as click
 import numpy as np
 
-from karyohmm import DataReader, PocHMM
+from karyohmm import DataReader, PocHMM, MetaHMM
 
 # Setup the logging configuration for the CLI
 logging.basicConfig(
@@ -35,7 +35,7 @@ logging.basicConfig(
 @click.option(
     "--mode",
     required=True,
-    default="Meta",
+    default="Duo",
     type=click.Choice(["Meta", "Duo"]),
     show_default=True,
 )
@@ -71,7 +71,7 @@ logging.basicConfig(
     default=1e-2,
     type=float,
     show_default=True,
-    help="Probability of shifting between aneuploidy states between SNPs.",
+    help="Probability of shifting between karyotype states between SNPs.",
 )
 @click.option(
     "--maternal",
@@ -107,8 +107,8 @@ def main(
     thin=1,
     recomb_rate=1e-8,
     aneuploidy_rate=1e-2,
-    duo_maternal=None,
-    gzip=False,
+    duo_maternal=True,
+    gzip=True,
     out="karyohmm",
 ):
     """Karyohmm-Inference CLI."""
