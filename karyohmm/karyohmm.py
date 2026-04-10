@@ -36,7 +36,7 @@ from karyohmm_utils import (
 )
 from scipy.optimize import brentq, minimize
 from scipy.special import logsumexp as logsumexp_sp
-from scipy.stats import norm
+from scipy.stats import chi2
 
 
 class AneuploidyHMM:
@@ -1514,47 +1514,69 @@ class MccEst:
         sigma_est = opt_res.x[1]
         return c_est, sigma_est
 
-    def mcc_ci_poc(
-        self, bafs, mat_haps, freqs, c_hat=0.0, std_dev=0.1, h=1e-5, alpha=0.05
-    ):
-        """Obtain a confidence interval for the MCC estimates in the POC model."""
+    def mcc_ci_poc(self, bafs, mat_haps, freqs, c_hat=0.0, std_dev=0.1, alpha=0.95, df=1):
+        """Obtain a confidence interval for the MCC estimates in the POC model using a profile-likelihood."""
         assert (c_hat >= 0) and (c_hat <= 0.5)
         assert std_dev > 0
         assert (alpha > 0) and (alpha < 1)
-        assert h > 0
-        z_crit = norm.ppf(alpha / 2)
-        ll = lambda x: self.loglik_mcc_poc(
-            bafs=bafs, mat_haps=mat_haps, freqs=freqs, c=x, std_dev=std_dev
+        wilks = lambda x: (
+            2
+            * (
+                self.loglik_mcc_poc(
+                    bafs=bafs, mat_haps=mat_haps, freqs=freqs, c=c_hat, std_dev=std_dev
+                )
+                - self.loglik_mcc_poc(
+                    bafs=bafs, mat_haps=mat_haps, freqs=freqs, c=x, std_dev=std_dev
+                )
+            )
         )
-        d2 = lambda ll, c, h: (
-            (ll(np.minimum(c + h, 0.5)) - 2 * ll(c) + ll(np.maximum(c - h, 0.0)))
-            / (h**2)
-        )
-        fisher_I_inv = 1.0 / -d2(ll, c=c_hat, h=h)
-        # NOTE: in certain cases this might need to be flipped ...
-        lower_CI = c_hat - z_crit * np.sqrt(1 / bafs.size * fisher_I_inv)
-        upper_CI = c_hat + z_crit * np.sqrt(1 / bafs.size * fisher_I_inv)
+        qval = chi2.ppf(alpha, df=df)
+        try:
+            lower_CI = brentq(lambda x: wilks(x) - qval, 1e-4, c_hat)
+        except ValueError:
+            lower_CI = 0.0
+        try:
+            upper_CI = brentq(lambda x: wilks(x) - qval, c_hat, 0.5)
+        except ValueError:
+            upper_CI = 0.5
         return (lower_CI, c_hat, upper_CI)
 
     def mcc_ci_trio(
-        self, bafs, mat_haps, pat_haps, c_hat=0.0, std_dev=0.1, h=1e-5, alpha=0.95
+        self, bafs, mat_haps, pat_haps, c_hat=0.0, std_dev=0.1, h=1e-5, alpha=0.95, df=1
     ):
-        """Obtain the CI for the estimated contamination in trios..."""
+        """Obtain the CI for the estimated contamination in trios using a profile-likelihood."""
         assert (c_hat >= 0) and (c_hat <= 0.5)
         assert std_dev > 0
         assert (alpha > 0) and (alpha < 1)
         assert h > 0
-        z_crit = norm.ppf(alpha / 2)
-        ll = lambda x: self.loglik_mcc_trio(
-            bafs=bafs, mat_haps=mat_haps, pat_haps=pat_haps, c=x, std_dev=std_dev
-        )  # noqa
-        d2 = lambda ll, c, h: (
-            (ll(np.minimum(c + h, 0.5)) - 2 * ll(c) + ll(np.maximum(c - h, 0.0)))
-            / (h**2)
-        )  # noqa
-        fisher_I_inv = 1.0 / -d2(ll, c=c_hat, h=h)
-        lower_CI = c_hat - z_crit * np.sqrt(1 / bafs.size * fisher_I_inv)
-        upper_CI = c_hat + z_crit * np.sqrt(1 / bafs.size * fisher_I_inv)
+        wilks = lambda x: (
+            2
+            * (
+                self.loglik_mcc_trio(
+                    bafs=bafs,
+                    mat_haps=mat_haps,
+                    pat_haps=pat_haps,
+                    c=c_hat,
+                    std_dev=std_dev,
+                )
+                - self.loglik_mcc_trio(
+                    bafs=bafs,
+                    mat_haps=mat_haps,
+                    pat_haps=pat_haps,
+                    c=x,
+                    std_dev=std_dev,
+                )
+            )
+        )
+        qval = chi2.ppf(alpha, df=df)
+        try:
+            lower_CI = brentq(lambda x: wilks(x) - qval, 1e-4, c_hat)
+        except ValueError:
+            lower_CI = 0.0
+        try:
+            upper_CI = brentq(lambda x: wilks(x) - qval, c_hat, 0.5)
+        except ValueError:
+            upper_CI = 0.5
         return (lower_CI, c_hat, upper_CI)
 
 

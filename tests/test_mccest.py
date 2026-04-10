@@ -68,7 +68,7 @@ def test_ci_trio(
         bafs=bafs, mat_haps=mat_haps, pat_haps=pat_haps, c_hat=c_est, std_dev=std_dev
     )
     assert x == c_est
-    # assert lower95_c <= upper95_c
+    assert lower95_c <= upper95_c
 
 
 def test_ci_poc(
@@ -82,8 +82,7 @@ def test_ci_poc(
         bafs=bafs, mat_haps=mat_haps, freqs=freqs, c_hat=c_est, std_dev=std_dev
     )
     assert x == c_est
-    # NOTE: this is a bit of a pathological case ...
-    # assert lower95_c <= upper95_c
+    assert lower95_c <= upper95_c
 
 
 def test_realistic_ci_trio(m=10000, n=5, c=0.1):
