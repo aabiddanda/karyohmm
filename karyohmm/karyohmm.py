@@ -1144,6 +1144,8 @@ class PocHMM(MetaHMM):
             lambda x: (
                 -self.forward_algorithm(
                     bafs=bafs,
+                    lrrs=lrrs,
+                    sigmas=sigmas,
                     pos=pos,
                     haps=haps,
                     freqs=freqs,
@@ -1514,7 +1516,9 @@ class MccEst:
         sigma_est = opt_res.x[1]
         return c_est, sigma_est
 
-    def mcc_ci_poc(self, bafs, mat_haps, freqs, c_hat=0.0, std_dev=0.1, alpha=0.95, df=1):
+    def mcc_ci_poc(
+        self, bafs, mat_haps, freqs, c_hat=0.0, std_dev=0.1, alpha=0.95, df=1
+    ):
         """Obtain a confidence interval for the MCC estimates in the POC model using a profile-likelihood."""
         assert (c_hat >= 0) and (c_hat <= 0.5)
         assert std_dev > 0

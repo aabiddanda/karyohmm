@@ -4,7 +4,6 @@ import logging
 
 import rich_click as click
 import numpy as np
-import pandas as pd
 
 from karyohmm import DataReader, PocHMM
 
@@ -75,10 +74,10 @@ logging.basicConfig(
     help="Probability of shifting between aneuploidy states between SNPs.",
 )
 @click.option(
-    "--duo_maternal",
-    "-dm",
+    "--maternal",
+    "-m",
     required=False,
-    default=None,
+    default=False,
     type=bool,
     show_default=True,
     help="Indicator of duo being mother-child duo.",
@@ -103,7 +102,7 @@ logging.basicConfig(
 def main(
     input,
     viterbi=False,
-    mode="Meta",
+    mode="Duo",
     algo="Powell",
     thin=1,
     recomb_rate=1e-8,

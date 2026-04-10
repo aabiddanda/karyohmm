@@ -4,7 +4,6 @@ import logging
 
 import rich_click as click
 import numpy as np
-import pandas as pd
 
 from karyohmm import DataReader, MetaHMM
 
@@ -68,15 +67,6 @@ logging.basicConfig(
     help="Probability of shifting between aneuploidy states between SNPs.",
 )
 @click.option(
-    "--duo_maternal",
-    "-dm",
-    required=False,
-    default=None,
-    type=bool,
-    show_default=True,
-    help="Indicator of duo being mother-child duo.",
-)
-@click.option(
     "--gzip",
     "-g",
     is_flag=True,
@@ -100,13 +90,12 @@ def main(
     thin=1,
     recomb_rate=1e-8,
     aneuploidy_rate=1e-2,
-    duo_maternal=None,
     gzip=False,
     out="karyohmm",
 ):
     """Karyohmm-Inference CLI."""
     logging.info(f"Starting to read input data {input}...")
-    data_reader = DataReader(mode=mode, duo_maternal=duo_maternal)
+    data_reader = DataReader(mode="Meta")
     data_df = data_reader.read_data(input)
     assert data_df is not None
     logging.info(f"Finished reading in {input}.")
@@ -211,95 +200,18 @@ def main(
                     + [col for col in path_df.columns if col not in cols_to_move]
                 ]
                 path_dfs.append(path_df)
-        if mode == "Duo":
-            # Defining the numpy objects to test out.
-            if data_reader.duo_maternal:
-                haps = np.vstack([cur_df.mat_hap0.values, cur_df.mat_hap1.values])
-            else:
-                haps = np.vstack([cur_df.pat_hap0.values, cur_df.pat_hap1.values])
-            bafs = cur_df.baf.values
-            pos = cur_df.pos.values
-            ps = None
-            if "af" in cur_df.columns:
-                if not np.any(np.isnan(cur_df["af"].values)):
-                    ps = cur_df["af"].values
-            if thin > 1:
-                pi0_est, sigma_est = hmm.est_sigma_pi0(
-                    bafs=bafs[::thin],
-                    haps=haps[:, ::thin],
-                    pos=pos[::thin],
-                    freqs=ps if ps is None else ps[::thin],
-                    r=recomb_rate,
-                    a=aneuploidy_rate,
-                    algo=algo,
-                )
-            else:
-                pi0_est, sigma_est = hmm.est_sigma_pi0(
-                    bafs=bafs,
-                    haps=haps,
-                    pos=pos,
-                    freqs=ps,
-                    r=recomb_rate,
-                    a=aneuploidy_rate,
-                    algo=algo,
-                )
-            logging.info(
-                f"DuoHMM emission parameters are pi0={pi0_est:.3f}, sigma={sigma_est:.3f} for {c}."
-            )
-            logging.info(f"Finished inference of DuoHMM-parameters for {c}!")
-            logging.info(f"Starting Forward-Backward algorithm tracing for {c} ...")
-            gammas, states, karyotypes = hmm.forward_backward(
-                bafs=bafs,
-                pos=pos,
-                haps=haps,
-                freqs=ps,
-                pi0=pi0_est,
-                std_dev=sigma_est,
-                r=recomb_rate,
-                a=aneuploidy_rate,
-            )
-            logging.info(f"Finished  Forward-Backward algorithm for {c}!")
-            kar_prob = hmm.posterior_karyotypes(gammas, karyotypes)
-            kar_prob["pi0_hat"] = pi0_est
-            kar_prob["sigma_hat"] = sigma_est
-            kar_prob["chrom"] = c
-            df = pd.DataFrame(kar_prob, index=[0])
-            kar_dfs.append(df)
-            state_lbls = [hmm.get_state_str(s) for s in states]
-            gamma_df = pd.DataFrame(gammas.T)
-            gamma_df.columns = state_lbls
-            gamma_df["chrom"] = cur_df["chrom"].values
-            gamma_df["pos"] = cur_df["pos"].values
-            gamma_df["pi0_hat"] = pi0_est
-            gamma_df["sigma_hat"] = sigma_est
-            cols_to_move = ["chrom", "pos", "pi0_hat", "sigma_hat"]
-            gamma_df = gamma_df[
-                cols_to_move
-                + [col for col in gamma_df.columns if col not in cols_to_move]
-            ]
-            gamma_dfs.append(gamma_df)
 
-    if mode == "Meta":
-        out_fp = f"{out}.meta.posterior.tsv.gz" if gzip else f"{out}.meta.posterior.tsv"
-        kar_df = pd.concat(kar_dfs)
-        kar_df.to_csv(out_fp, sep="\t", index=None)
-        logging.info(f"Wrote full posterior karyotypes to {out_fp}!")
-        gamma_df = pd.concat(gamma_dfs)
-        out_fp = f"{out}.meta.gammas.tsv.gz" if gzip else f"{out}.meta.gammas.tsv"
-        gamma_df.to_csv(out_fp, sep="\t", index=None)
-        logging.info(f"Wrote per-site forward-backward algorithm results to {out_fp}")
-        if viterbi:
-            path_df = pd.concat(path_dfs)
-            out_fp = f"{out}.meta.viterbi.tsv.gz" if gzip else f"{out}.meta.viterbi.tsv"
-            path_df.to_csv(out_fp, sep="\t", index=None)
-            logging.info(f"Wrote Viterbi algorithm traceback to {out_fp}")
-    if mode == "Duo":
-        out_fp = f"{out}.duo.posterior.tsv.gz" if gzip else f"{out}.duo.posterior.tsv"
-        kar_df = pd.concat(kar_dfs)
-        kar_df.to_csv(out_fp, sep="\t", index=None)
-        logging.info(f"Wrote full posterior karyotypes to {out_fp}")
-        gamma_df = pd.concat(gamma_dfs)
-        out_fp = f"{out}.duo.gammas.tsv.gz" if gzip else f"{out}.duo.gammas.tsv"
-        gamma_df.to_csv(out_fp, sep="\t", index=None)
-        logging.info(f"Wrote per-site forward-backward algorithm results to {out_fp}")
+    out_fp = f"{out}.meta.posterior.tsv.gz" if gzip else f"{out}.meta.posterior.tsv"
+    kar_df = pd.concat(kar_dfs)
+    kar_df.to_csv(out_fp, sep="\t", index=None)
+    logging.info(f"Wrote full posterior karyotypes to {out_fp}!")
+    gamma_df = pd.concat(gamma_dfs)
+    out_fp = f"{out}.meta.gammas.tsv.gz" if gzip else f"{out}.meta.gammas.tsv"
+    gamma_df.to_csv(out_fp, sep="\t", index=None)
+    logging.info(f"Wrote per-site forward-backward algorithm results to {out_fp}")
+    if viterbi:
+        path_df = pd.concat(path_dfs)
+        out_fp = f"{out}.meta.viterbi.tsv.gz" if gzip else f"{out}.meta.viterbi.tsv"
+        path_df.to_csv(out_fp, sep="\t", index=None)
+        logging.info(f"Wrote Viterbi algorithm traceback to {out_fp}")
     logging.info("Finished karyohmm analysis!")
