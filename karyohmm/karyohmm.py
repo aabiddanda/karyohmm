@@ -235,6 +235,8 @@ class MetaHMM(AneuploidyHMM):
     def forward_algorithm(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         mat_haps,
         pat_haps,
@@ -266,6 +268,10 @@ class MetaHMM(AneuploidyHMM):
 
         """
         assert bafs.ndim == 1
+        assert lrrs.ndim == 1
+        assert sigmas.ndim == 1
+        assert bafs.size == lrrs.size
+        assert sigmas.size == lrrs.size
         assert pos.ndim == 1
         assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
         assert (pi0 > 0) & (pi0 < 1.0)
@@ -278,6 +284,8 @@ class MetaHMM(AneuploidyHMM):
         assert a < 0.5 and a > 0
         alphas, scaler, _, _, loglik = forward_algo(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             mat_haps,
             pat_haps,
@@ -294,6 +302,8 @@ class MetaHMM(AneuploidyHMM):
     def backward_algorithm(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         mat_haps,
         pat_haps,
@@ -325,6 +335,10 @@ class MetaHMM(AneuploidyHMM):
 
         """
         assert bafs.ndim == 1
+        assert lrrs.ndim == 1
+        assert sigmas.ndim == 1
+        assert bafs.size == lrrs.size
+        assert sigmas.size == bafs.size
         assert pos.ndim == 1
         assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
         assert (pi0 > 0) & (pi0 < 1.0)
@@ -337,6 +351,8 @@ class MetaHMM(AneuploidyHMM):
         assert a < 0.5 and a > 0
         betas, scaler, _, _, loglik = backward_algo(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             mat_haps,
             pat_haps,
@@ -353,6 +369,8 @@ class MetaHMM(AneuploidyHMM):
     def forward_backward(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         mat_haps,
         pat_haps,
@@ -383,6 +401,8 @@ class MetaHMM(AneuploidyHMM):
         """
         alphas, _, states, karyotypes, _ = self.forward_algorithm(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             mat_haps,
             pat_haps,
@@ -394,6 +414,8 @@ class MetaHMM(AneuploidyHMM):
         )
         betas, _, _, _, _ = self.backward_algorithm(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             mat_haps,
             pat_haps,
@@ -409,6 +431,8 @@ class MetaHMM(AneuploidyHMM):
     def viterbi_algorithm(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         mat_haps,
         pat_haps,
@@ -439,6 +463,10 @@ class MetaHMM(AneuploidyHMM):
 
         """
         assert bafs.ndim == 1
+        assert lrrs.ndim == 1
+        assert sigmas.ndim == 1
+        assert bafs.size == lrrs.size
+        assert lrrs.size == sigmas.size
         assert pos.ndim == 1
         assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
         assert (pi0 > 0) & (pi0 < 1.0)
@@ -449,6 +477,8 @@ class MetaHMM(AneuploidyHMM):
         assert np.all(pos[1:] > pos[:-1])
         path, states, deltas, psi = viterbi_algo(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             mat_haps,
             pat_haps,
@@ -509,6 +539,8 @@ class MetaHMM(AneuploidyHMM):
     def genotype_embryo(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         mat_haps,
         pat_haps,
@@ -545,6 +577,8 @@ class MetaHMM(AneuploidyHMM):
         if viterbi:
             path, states, _, _ = self.viterbi_algorithm(
                 bafs=bafs,
+                lrrs=lrrs,
+                sigmas=sigmas,
                 pos=pos,
                 mat_haps=mat_haps,
                 pat_haps=pat_haps,
@@ -566,6 +600,8 @@ class MetaHMM(AneuploidyHMM):
             gammas, states, _ = self.forward_backward(
                 bafs=bafs,
                 pos=pos,
+                lrrs=lrrs,
+                sigmas=sigmas,
                 mat_haps=mat_haps,
                 pat_haps=pat_haps,
                 pi0=pi0,
@@ -1106,6 +1142,8 @@ class PocHMM(MetaHMM):
     def est_sigma_pi0(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         haps,
         freqs=None,
@@ -1168,6 +1206,8 @@ class PocHMM(MetaHMM):
     def forward_algorithm(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         haps,
         freqs=None,
@@ -1200,6 +1240,10 @@ class PocHMM(MetaHMM):
 
         """
         assert bafs.ndim == 1
+        assert lrrs.ndim == 1
+        assert sigmas.ndim == 1
+        assert bafs.size == lrrs.size
+        assert lrrs.size = sigmas.size
         assert pos.ndim == 1
         assert haps.ndim == 2
         assert (pi0 > 0) & (pi0 < 1.0)
@@ -1216,6 +1260,8 @@ class PocHMM(MetaHMM):
             freqs = np.repeat(0.5, bafs.size)
         alphas, scaler, _, _, loglik = forward_algo_duo(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             haps,
             freqs,
@@ -1232,6 +1278,8 @@ class PocHMM(MetaHMM):
     def backward_algorithm(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         haps,
         freqs=None,
@@ -1264,6 +1312,10 @@ class PocHMM(MetaHMM):
 
         """
         assert bafs.ndim == 1
+        assert lrrs.ndim == 1
+        assert sigmas.ndim == 1
+        assert bafs.size == lrrs.size
+        assert lrrs.size == sigmas.size
         assert pos.ndim == 1
         assert haps.ndim == 2
         assert (pi0 > 0) & (pi0 < 1.0)
@@ -1280,6 +1332,8 @@ class PocHMM(MetaHMM):
             freqs = np.repeat(0.5, bafs.size)
         betas, scaler, _, _, loglik = backward_algo_duo(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             haps,
             freqs,
@@ -1296,6 +1350,8 @@ class PocHMM(MetaHMM):
     def forward_backward(
         self,
         bafs,
+        lrrs,
+        sigmas,
         pos,
         haps,
         freqs=None,
@@ -1329,6 +1385,8 @@ class PocHMM(MetaHMM):
         """
         alphas, _, states, karyotypes, _ = self.forward_algorithm(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             haps,
             freqs,
@@ -1341,6 +1399,8 @@ class PocHMM(MetaHMM):
         )
         betas, _, _, _, _ = self.backward_algorithm(
             bafs,
+            lrrs,
+            sigmas,
             pos,
             haps,
             freqs,
@@ -1355,10 +1415,14 @@ class PocHMM(MetaHMM):
         return gammas, states, karyotypes
 
     def genotype_parent(
-        self, bafs, haps, gammas, freqs=None, maternal=True, pi0=0.2, std_dev=0.25
+        self, bafs, lrrs, sigmas, haps, gammas, freqs=None, maternal=True, pi0=0.2, std_dev=0.25
     ):
         """Obtain a matrix of genotype dosages/posteriors for the unobserved parent."""
         assert bafs.ndim == 1
+        assert lrrs.ndim == 1
+        assert sigmas.ndim == 1
+        assert bafs.size == lrrs.size
+        assert sigmas.size == sigmas.size
         assert haps.ndim == 2
         assert (pi0 > 0) & (pi0 < 1.0)
         assert std_dev > 0
@@ -1398,7 +1462,7 @@ class PocHMM(MetaHMM):
                             pi0=pi0,
                             std_dev=std_dev,
                             k=ks[j],
-                        )
+                        ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
                         + np.log(p)
                         + gammas[j, i]
                     )

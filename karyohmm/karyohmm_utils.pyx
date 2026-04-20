@@ -145,11 +145,16 @@ cpdef double emission_baf(double baf, double m, double p, double pi0=0.2, double
         return x
 
 cpdef double emission_lrr(double lrr, int k=2, double std_dev=0.2):
-    """Calculate the emission for LRR conditional on ploidy.
-        NOTE: this may have to change ...
+    """
+    Emission distribution for LRR conditional on ploidy.
+
+    NOTE: missing LRR is denoted as -9
     """
     mu_i = {0: -3, 1: -1, 2: 0, 3: np.log2(1.5)}
-    return norm_logl(lrr, mu_i[k], std_dev)
+    if lrr == -9:
+        return -1
+    else:
+        return norm_logl(lrr, mu_i[k], std_dev)
 
 
 cpdef double loglik_mcc(double baf, int mg, int pg, double std_dev=0.1, double c=0.1):
@@ -313,7 +318,7 @@ def forward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes
                 pi0=pi0,
                 std_dev=std_dev,
                 k=ks[j],
-            )
+            ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
         alphas[j, 0] += cur_emission
     scaler = np.zeros(n)
     scaler[0] = logsumexp(alphas[:, 0])
@@ -333,7 +338,7 @@ def forward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes
                     pi0=pi0,
                     std_dev=std_dev,
                     k=ks[j],
-                )
+                ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
             alphas[j, i] = cur_emission + logsumexp(A_hat[:, j] + alphas[:, (i - 1)])
         scaler[i] = logsumexp(alphas[:, i])
         alphas[:, i] -= scaler[i]
@@ -370,7 +375,7 @@ def backward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotype
                     pi0=pi0,
                     std_dev=std_dev,
                     k=ks[j],
-                )
+                ) + emission_lrr(lrrs[i+1], k=ks[j], std_dev=sigmas[i+1])
         for j in range(m):
             # This should be the correct version here ...
             betas[j, i] = logsumexp(A_hat[:, j] + cur_emissions + betas[:, (i + 1)])
@@ -386,7 +391,7 @@ def backward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotype
                         pi0=pi0,
                         std_dev=std_dev,
                         k=ks[j],
-                    )
+                    ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
                 # Add in the initialization + first emission?
                 betas[j, i] += log(1/m) + cur_emission
         # Do the rescaling here ...
@@ -420,7 +425,7 @@ def viterbi_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes
                     pi0=pi0,
                     std_dev=std_dev,
                     k=ks[j],
-                )
+                ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
             psi[j, i] = np.argmax(deltas[:, i - 1] + A_hat[:, j]).astype(int)
     path = np.zeros(n, dtype=int)
     path[-1] = np.argmax(deltas[:, -1]).astype(int)
@@ -643,7 +648,7 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
                     pi0=pi0,
                     std_dev=std_dev,
                     k=ks[j],
-                ) + log(p)
+                ) + emission_lrr(lrrs[0], k=ks[j], std_dev=sigmas[0]) + log(p)
         alphas[j, 0] = logsumexp(cur_emission)
     scaler = np.zeros(n)
     scaler[0] = logsumexp(alphas[:, 0])
@@ -670,7 +675,7 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
                         pi0=pi0,
                         std_dev=std_dev,
                         k=ks[j],
-                    ) + log(p)
+                    ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i]) + log(p)
             alphas[j, i] = logsumexp(cur_emission) + logsumexp(A_hat[:, j] + alphas[:, (i - 1)])
         scaler[i] = logsumexp(alphas[:, i])
         alphas[:, i] -= scaler[i]
@@ -714,7 +719,7 @@ def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, 
                         pi0=pi0,
                         std_dev=std_dev,
                         k=ks[j],
-                    ) + log(p)
+                    ) + emission_lrr(lrrs[i+1], k=ks[j], std_dev=sigmas[i+1]) + log(p)
             cur_emissions[j] = logsumexp(cur_emission)
         for j in range(m):
             betas[j, i] = logsumexp(A_hat[:, j] + cur_emissions + betas[:, (i + 1)])
@@ -736,7 +741,7 @@ def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, 
                             pi0=pi0,
                             std_dev=std_dev,
                             k=ks[j],
-                        ) + log(p)
+                        ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i]) +log(p)
                 # This is in log-space as well ...
                 cur_emissions = logsumexp(cur_emission)
                 # Add in the initialization + first emission?

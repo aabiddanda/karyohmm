@@ -226,3 +226,20 @@ def test_sim_mcc(length, m, cc):
     idx = (baf != 0) & (baf != 1)
     if ~np.isclose(cc, 0):
         assert np.all(cc_baf[idx] != baf[idx])
+
+
+@given(
+    length=st.floats(min_value=1e2, max_value=1e8),
+    m=st.integers(min_value=100, max_value=1000),
+    c=st.sampled_from(["2p0", "2p1", "2m0", "2m1"]),
+)
+def test_pgt_sim_upd(length, m, c):
+    data = pgt_sim.full_ploidy_sim(m=m, length=length, ploidy=2, upd=c)
+    assert data["m"] == m
+    assert data["length"] == length
+    assert np.max(data["pos"]) <= length
+    assert "baf" in data.keys()
+    assert "lrr" in data.keys()
+    if c in ["2p0", "2m0"]:
+        # isodisomy so no true hets
+        assert np.all((data["geno_embryo"] == 0) | (data["geno_embryo"] == 2))

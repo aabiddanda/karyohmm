@@ -582,7 +582,7 @@ class PGTSim(PGTSimBase):
         if (ploidy == 2) and (upd is not None):
             assert upd in ["2p0", "2p1", "2m0", "2m1"]
             zs_maternal, zs_paternal, mat_hap1, pat_hap1, aploid = (
-                self.sim_haplotype_paths(
+                self.sim_haplotype_paths_upd(
                     mat_haps,
                     pat_haps,
                     pos,
