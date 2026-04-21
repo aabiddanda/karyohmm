@@ -45,3 +45,6 @@ attr = "karyohmm.__version__"
 [tool.cython-lint]
 max-line-length = 180
 ignore = ['E501','E503', 'E504']
+
+[tool.ruff.lint]
+ignore = ["E731", "F401"] # Specific errors to ignore globally

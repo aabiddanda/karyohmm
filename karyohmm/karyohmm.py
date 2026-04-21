@@ -1441,7 +1441,6 @@ class PocHMM(MetaHMM):
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
-            # NOTE: This is approximately uniform across the
             freqs = np.repeat(0.5, bafs.size)
         ks = [sum([s >= 0 for s in state]) for state in self.states]
         n = bafs.size
