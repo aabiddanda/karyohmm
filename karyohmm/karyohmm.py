@@ -1243,7 +1243,7 @@ class PocHMM(MetaHMM):
         assert lrrs.ndim == 1
         assert sigmas.ndim == 1
         assert bafs.size == lrrs.size
-        assert lrrs.size = sigmas.size
+        assert lrrs.size == sigmas.size
         assert pos.ndim == 1
         assert haps.ndim == 2
         assert (pi0 > 0) & (pi0 < 1.0)
@@ -1415,7 +1415,16 @@ class PocHMM(MetaHMM):
         return gammas, states, karyotypes
 
     def genotype_parent(
-        self, bafs, lrrs, sigmas, haps, gammas, freqs=None, maternal=True, pi0=0.2, std_dev=0.25
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        haps,
+        gammas,
+        freqs=None,
+        maternal=True,
+        pi0=0.2,
+        std_dev=0.25,
     ):
         """Obtain a matrix of genotype dosages/posteriors for the unobserved parent."""
         assert bafs.ndim == 1
@@ -1462,7 +1471,8 @@ class PocHMM(MetaHMM):
                             pi0=pi0,
                             std_dev=std_dev,
                             k=ks[j],
-                        ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
+                        )
+                        + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
                         + np.log(p)
                         + gammas[j, i]
                     )
