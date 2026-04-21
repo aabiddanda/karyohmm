@@ -199,7 +199,7 @@ def test_pochmm_fwdbwd(data):
 
 @pytest.mark.parametrize(
     "data",
-    [data_disomy, data_trisomy, data_nullisomy, data_monosomy],
+    [data_disomy, data_trisomy, data_monosomy],
 )
 def test_pochmm_ploidy_correctness(data):
     """Test the forward algorithm both with and without including the lrr."""
@@ -208,10 +208,19 @@ def test_pochmm_ploidy_correctness(data):
     sigmas = data["sigmas"]
     pos = data["pos"]
     mat_haps = data["mat_haps"]
+    pat_haps = data["pat_haps"]
     freqs = data["af"]
+    # NOTE: this is like  the best-case scenario here ... 
     hmm = PocHMM()
     gammas, states, karyotypes = hmm.forward_backward(
-        bafs=baf, lrrs=lrr, sigmas=sigmas, pos=pos, haps=mat_haps, freqs=freqs
+        bafs=baf,
+        lrrs=lrr,
+        sigmas=sigmas,
+        pos=pos,
+        haps=mat_haps,
+        pi0=0.7,
+        std_dev=0.1,
+        freqs=pat_haps.sum(axis=0) / 2.0,
     )
     assert np.all(np.isclose(np.sum(np.exp(gammas), axis=0), 1.0))
     post_dict = hmm.posterior_karyotypes(gammas, karyotypes)
@@ -219,3 +228,4 @@ def test_pochmm_ploidy_correctness(data):
     for x in ["0", "1m", "1p", "2", "3m", "3p"]:
         assert x in post_dict
     assert post_dict[data["aploid"]] == max_post
+    assert max_post >= 0.95

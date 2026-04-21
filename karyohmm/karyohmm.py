@@ -1256,8 +1256,7 @@ class PocHMM(MetaHMM):
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
-            # NOTE: This is not a uniform sampling across the genotypes ...
-            freqs = np.repeat(0.5, bafs.size)
+            freqs = np.repeat(-1, bafs.size)
         alphas, scaler, _, _, loglik = forward_algo_duo(
             bafs,
             lrrs,
@@ -1328,8 +1327,7 @@ class PocHMM(MetaHMM):
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
-            # NOTE: This is not a uniform sampling across the genotypes ...
-            freqs = np.repeat(0.5, bafs.size)
+            freqs = np.repeat(-1, bafs.size)
         betas, scaler, _, _, loglik = backward_algo_duo(
             bafs,
             lrrs,
@@ -1476,7 +1474,7 @@ class PocHMM(MetaHMM):
                         + gammas[j, i]
                     )
                 geno_dosage[idx, i] = logsumexp(cur_emissions)
-        # Now rescale the dosage estimates ...
+        # Now rescale the dosage estimates here ...
         geno_dosage_rev = np.zeros(shape=(3, n))
         for i in range(n):
             tot = logsumexp_sp(geno_dosage[:, i])
@@ -1486,6 +1484,10 @@ class PocHMM(MetaHMM):
             )
             geno_dosage_rev[2, i] = geno_dosage[3, i] - tot
         return geno_dosage_rev
+
+    def infer_missing_af(self, bafs, geno, eps=0.1):
+        """Estimate the opposite parents allele frequency conditional on BAF."""
+        raise NotImplementedError("Method is not currently implemented!")
 
 
 class MccEst:
