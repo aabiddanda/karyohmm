@@ -210,7 +210,7 @@ def test_pochmm_ploidy_correctness(data):
     mat_haps = data["mat_haps"]
     pat_haps = data["pat_haps"]
     freqs = data["af"]
-    # NOTE: this is like  the best-case scenario here ... 
+    # NOTE: this is like  the best-case scenario here ...
     hmm = PocHMM()
     gammas, states, karyotypes = hmm.forward_backward(
         bafs=baf,

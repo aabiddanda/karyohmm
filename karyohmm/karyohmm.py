@@ -245,6 +245,8 @@ class MetaHMM(AneuploidyHMM):
         r=1e-8,
         a=1e-2,
         unphased=False,
+        mat_err=0.0,
+        pat_err=0.0,
     ):
         """Forward HMM algorithm under a multi-ploidy model.
 
@@ -258,6 +260,8 @@ class MetaHMM(AneuploidyHMM):
             - r (`float`): intra-karyotype transition rate (recombination)
             - a (`float`): inter-karyotype transition rate
             - unphased (`bool`): run the model in unphased mode
+            - mat_err (`float`): per-site maternal genotyping error rate
+            - pat_err (`float`): per-site paternal genotyping error rate
 
         Returns:
             - alphas (`np.array`): forward variable from hmm across k states
@@ -282,6 +286,8 @@ class MetaHMM(AneuploidyHMM):
         assert np.all(pos[1:] > pos[:-1])
         assert r < 0.5 and r > 0
         assert a < 0.5 and a > 0
+        assert 0.0 <= mat_err < 0.5
+        assert 0.0 <= pat_err < 0.5
         alphas, scaler, _, _, loglik = forward_algo(
             bafs,
             lrrs,
@@ -296,6 +302,8 @@ class MetaHMM(AneuploidyHMM):
             pi0=pi0,
             std_dev=std_dev,
             unphased=int(unphased),
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         return alphas, scaler, self.states, self.karyotypes, loglik
 
@@ -312,6 +320,8 @@ class MetaHMM(AneuploidyHMM):
         r=1e-8,
         a=1e-2,
         unphased=False,
+        mat_err=0.0,
+        pat_err=0.0,
     ):
         """Backward HMM algorithm under a given statespace model.
 
@@ -325,6 +335,8 @@ class MetaHMM(AneuploidyHMM):
             - r (`float`): intra-karyotype transition rate (recombination)
             - a (`float`): inter-karyotype transition rate
             - unphased (`bool`): run the model in unphased mode
+            - mat_err (`float`): per-site maternal genotyping error rate
+            - pat_err (`float`): per-site paternal genotyping error rate
 
         Returns:
             - betas (`np.array`): backward variables from hmm across the k states
@@ -349,6 +361,8 @@ class MetaHMM(AneuploidyHMM):
         assert np.all(pos[1:] > pos[:-1])
         assert r < 0.5 and r > 0
         assert a < 0.5 and a > 0
+        assert 0.0 <= mat_err < 0.5
+        assert 0.0 <= pat_err < 0.5
         betas, scaler, _, _, loglik = backward_algo(
             bafs,
             lrrs,
@@ -363,6 +377,8 @@ class MetaHMM(AneuploidyHMM):
             pi0=pi0,
             std_dev=std_dev,
             unphased=int(unphased),
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         return betas, scaler, self.states, self.karyotypes, loglik
 
@@ -379,6 +395,8 @@ class MetaHMM(AneuploidyHMM):
         r=1e-8,
         a=1e-2,
         unphased=False,
+        mat_err=0.0,
+        pat_err=0.0,
     ):
         """Run the forward-backward algorithm across all states.
 
@@ -392,6 +410,8 @@ class MetaHMM(AneuploidyHMM):
             - r (`float`): intra-karyotype transition rate (recombination)
             - a (`float`): inter-karyotype transition rate
             - unphased (`bool`): run the model in unphased mode
+            - mat_err (`float`): per-site maternal genotyping error rate
+            - pat_err (`float`): per-site paternal genotyping error rate
 
         Returns:
             - gammas (`np.array`): log posterior density of being in each of k hidden states
@@ -411,6 +431,8 @@ class MetaHMM(AneuploidyHMM):
             r=r,
             a=a,
             unphased=unphased,
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         betas, _, _, _, _ = self.backward_algorithm(
             bafs,
@@ -424,6 +446,8 @@ class MetaHMM(AneuploidyHMM):
             r=r,
             a=a,
             unphased=unphased,
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
         return gammas, states, karyotypes
@@ -441,6 +465,8 @@ class MetaHMM(AneuploidyHMM):
         r=1e-8,
         a=1e-2,
         unphased=False,
+        mat_err=0.0,
+        pat_err=0.0,
     ):
         """Implement the viterbi traceback through karyotypic states.
 
@@ -454,6 +480,8 @@ class MetaHMM(AneuploidyHMM):
             - r (`float`): intra-karyotype transition rate
             - a (`float`): inter-karyotype transition rate
             - unphased (`bool`): run the model in unphased mode
+            - mat_err (`float`): per-site maternal genotyping error rate
+            - pat_err (`float`): per-site paternal genotyping error rate
 
         Returns:
             - path (`np.array`): most likely copying path through k states in the model
@@ -475,6 +503,8 @@ class MetaHMM(AneuploidyHMM):
         assert bafs.size == mat_haps.shape[1]
         assert mat_haps.shape == pat_haps.shape
         assert np.all(pos[1:] > pos[:-1])
+        assert 0.0 <= mat_err < 0.5
+        assert 0.0 <= pat_err < 0.5
         path, states, deltas, psi = viterbi_algo(
             bafs,
             lrrs,
@@ -489,6 +519,8 @@ class MetaHMM(AneuploidyHMM):
             pi0=pi0,
             std_dev=std_dev,
             unphased=int(unphased),
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         return path, states, deltas, psi
 
@@ -623,6 +655,93 @@ class MetaHMM(AneuploidyHMM):
             # Dosages are oriented towards the alt allele (bottom row is the alt/alt homozygote)
         return dosages
 
+    def flag_parental_genotype_errors(
+        self,
+        gammas,
+        states,
+        bafs,
+        mat_haps,
+        pat_haps,
+        pi0=0.2,
+        std_dev=0.25,
+    ):
+        """Identify per-site parental genotype calls that are inconsistent with the posterior.
+
+        For each site, computes a posterior-weighted log Bayes factor comparing the
+        best alternative parental genotype (fixing the other parent) to the called one.
+        A positive score means the data, given the inferred copying state, prefers a
+        different parental genotype at that site.
+
+        Arguments:
+            - gammas (`np.array`): k x m log-posterior array from forward_backward
+            - states (`list`): list of state tuples (output of forward_backward)
+            - bafs (`np.array`): m-length array of B-allele frequencies
+            - mat_haps (`np.array`): 2 x m array of 0/1 maternal haplotypes
+            - pat_haps (`np.array`): 2 x m array of 0/1 paternal haplotypes
+            - pi0 (`float`): sparsity parameter for BAF emission
+            - std_dev (`float`): noise parameter for BAF emission
+
+        Returns:
+            - mat_err_score (`np.array`): m-length array; positive values flag likely maternal genotype errors
+            - pat_err_score (`np.array`): m-length array; positive values flag likely paternal genotype errors
+
+        """
+        assert gammas.ndim == 2
+        assert gammas.shape == (len(states), bafs.size)
+        assert mat_haps.shape == (2, bafs.size)
+        assert pat_haps.shape == (2, bafs.size)
+
+        m = bafs.size
+        mat_err_score = np.zeros(m)
+        pat_err_score = np.zeros(m)
+        all_genos = [[0, 0], [0, 1], [1, 0], [1, 1]]
+
+        for i in range(m):
+            mat_h = [int(mat_haps[0, i]), int(mat_haps[1, i])]
+            pat_h = [int(pat_haps[0, i]), int(pat_haps[1, i])]
+            for j, s in enumerate(states):
+                w = np.exp(gammas[j, i])
+                if w < 1e-12:
+                    continue
+                k = sum(v >= 0 for v in s)
+                if k == 0:
+                    continue
+                m_d = mat_dosage(mat_h, s)
+                p_d = pat_dosage(pat_h, s)
+                called_loglik = emission_baf(
+                    bafs[i], m_d, p_d, pi0=pi0, std_dev=std_dev, k=k
+                )
+                best_alt_mat = called_loglik
+                for alt_mat in all_genos:
+                    if alt_mat != mat_h:
+                        alt_loglik = emission_baf(
+                            bafs[i],
+                            mat_dosage(alt_mat, s),
+                            p_d,
+                            pi0=pi0,
+                            std_dev=std_dev,
+                            k=k,
+                        )
+                        if alt_loglik > best_alt_mat:
+                            best_alt_mat = alt_loglik
+                mat_err_score[i] += w * (best_alt_mat - called_loglik)
+                best_alt_pat = called_loglik
+                for alt_pat in all_genos:
+                    if alt_pat != pat_h:
+                        alt_loglik = emission_baf(
+                            bafs[i],
+                            m_d,
+                            pat_dosage(alt_pat, s),
+                            pi0=pi0,
+                            std_dev=std_dev,
+                            k=k,
+                        )
+                        if alt_loglik > best_alt_pat:
+                            best_alt_pat = alt_loglik
+                pat_err_score[i] += w * (best_alt_pat - called_loglik)
+
+        return mat_err_score, pat_err_score
+
 
 class QuadHMM(AneuploidyHMM):
     """HMM for sibling euploid embryos based on Roach et al 2010 but for BAF data."""
@@ -652,6 +771,8 @@ class QuadHMM(AneuploidyHMM):
         pi0=(0.7, 0.7),
         std_dev=(0.15, 0.15),
         r=1e-8,
+        mat_err=0.0,
+        pat_err=0.0,
     ):
         """Implement the forward algorithm for QuadHMM model.
 
@@ -663,6 +784,8 @@ class QuadHMM(AneuploidyHMM):
             - pi0 (`tuple - float`): sparsity parameter for B-allele emission model
             - std_dev (`tuple - float`): standard deviation for B-allele emission model
             - r (`float`): inter-state transition rate
+            - mat_err (`float`): per-site maternal genotyping error rate
+            - pat_err (`float`): per-site paternal genotyping error rate
 
         Returns:
             - alphas (`np.array`): forward variable from hmm across 4 sibling states
@@ -689,6 +812,8 @@ class QuadHMM(AneuploidyHMM):
             r=r,
             pi0=pi0,
             std_dev=std_dev,
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         return alphas, scaler, states, karyotypes, loglik
 
@@ -701,8 +826,10 @@ class QuadHMM(AneuploidyHMM):
         pi0=(0.7, 0.7),
         std_dev=(0.15, 0.15),
         r=1e-8,
+        mat_err=0.0,
+        pat_err=0.0,
     ):
-        """Implement the forward algorithm for QuadHMM model.
+        """Implement the backward algorithm for QuadHMM model.
 
         Arguments:
             - bafs (`list`): list of two arrays of B-allele frequencies across m sites for two siblings
@@ -712,9 +839,11 @@ class QuadHMM(AneuploidyHMM):
             - pi0 (`tuple - float`): sparsity parameter for B-allele emission model
             - std_dev (`tuple - float`): standard deviation for B-allele emission model
             - r (`float`): inter-state transition rate
+            - mat_err (`float`): per-site maternal genotyping error rate
+            - pat_err (`float`): per-site paternal genotyping error rate
 
         Returns:
-            - alphas (`np.array`): forward variable from hmm across 4 sibling states
+            - betas (`np.array`): backward variable from hmm across 4 sibling states
             - scaler (`np.array`): m-length array of scale parameters
             - states (`list`): tuple representation of the 4 states
             - karyotypes (`np.array`):  array of karyotypes (default: None)
@@ -738,6 +867,8 @@ class QuadHMM(AneuploidyHMM):
             r=r,
             pi0=pi0,
             std_dev=std_dev,
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         return alphas, scaler, states, karyotypes, loglik
 
@@ -751,6 +882,8 @@ class QuadHMM(AneuploidyHMM):
         std_dev=(0.15, 0.15),
         r=1e-8,
         a=1e-2,
+        mat_err=0.0,
+        pat_err=0.0,
     ):
         """Implement the forward-backward algorithm for the QuadHMM model.
 
@@ -762,6 +895,8 @@ class QuadHMM(AneuploidyHMM):
             - pi0 (`tuple - float`): sparsity parameter for B-allele emission model
             - std_dev (`tuple - float`): standard deviation for B-allele emission model
             - r (`float`): inter-state transition rate
+            - mat_err (`float`): per-site maternal genotyping error rate
+            - pat_err (`float`): per-site paternal genotyping error rate
 
         Returns:
             - gammas (`np.array`): log posterior density of being in each of 4 hidden states
@@ -779,6 +914,8 @@ class QuadHMM(AneuploidyHMM):
             pi0=pi0,
             std_dev=std_dev,
             r=r,
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         betas, _, _, _, _ = backward_algo_sibs(
             bafs,
@@ -790,6 +927,8 @@ class QuadHMM(AneuploidyHMM):
             pi0=pi0,
             std_dev=std_dev,
             r=r,
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
         return gammas, states, None
@@ -803,6 +942,8 @@ class QuadHMM(AneuploidyHMM):
         pi0=(0.7, 0.7),
         std_dev=(0.15, 0.15),
         r=1e-8,
+        mat_err=0.0,
+        pat_err=0.0,
     ):
         """Viterbi algorithm definition in a QuadHMM-context.
 
@@ -814,6 +955,8 @@ class QuadHMM(AneuploidyHMM):
             - pi0 (`tuple - float`): sparsity parameter for B-allele emission model
             - std_dev (`tuple - float`): standard deviation for B-allele emission model
             - r (`float`): inter-state transition rate
+            - mat_err (`float`): per-site maternal genotyping error rate
+            - pat_err (`float`): per-site paternal genotyping error rate
 
         Returns:
             - path (`np.array`): most likely copying path through k states in the model
@@ -832,6 +975,8 @@ class QuadHMM(AneuploidyHMM):
             pi0=pi0,
             std_dev=std_dev,
             r=r,
+            mat_err=mat_err,
+            pat_err=pat_err,
         )
         return path, states, deltas, psi
 
@@ -982,6 +1127,112 @@ class QuadHMM(AneuploidyHMM):
         red_gammas = np.log(red_gammas)
         map_path = np.argmax(red_gammas, axis=0)
         return map_path
+
+    def flag_parental_genotype_errors(
+        self,
+        gammas,
+        states,
+        bafs,
+        mat_haps,
+        pat_haps,
+        pi0=(0.7, 0.7),
+        std_dev=(0.15, 0.15),
+    ):
+        """Identify per-site parental genotype calls that are inconsistent with the posterior.
+
+        For each site, computes a posterior-weighted log Bayes factor comparing the
+        best alternative parental genotype (fixing the other parent) to the called one.
+        Both siblings observe the same parental genotype, so the joint sibling BAF
+        likelihood is used when scoring alternatives.  A positive score means the
+        data, given the inferred copying state, prefers a different parental genotype
+        at that site.
+
+        Arguments:
+            - gammas (`np.array`): k x m log-posterior array from forward_backward
+            - states (`list`): list of paired state tuples (output of forward_backward)
+            - bafs (`list`): list of two m-length BAF arrays for the two siblings
+            - mat_haps (`np.array`): 2 x m array of 0/1 maternal haplotypes
+            - pat_haps (`np.array`): 2 x m array of 0/1 paternal haplotypes
+            - pi0 (`tuple`): (pi0_sib0, pi0_sib1) sparsity parameters for BAF emission
+            - std_dev (`tuple`): (std_sib0, std_sib1) noise parameters for BAF emission
+
+        Returns:
+            - mat_err_score (`np.array`): m-length array; positive values flag likely maternal genotype errors
+            - pat_err_score (`np.array`): m-length array; positive values flag likely paternal genotype errors
+
+        """
+        assert gammas.ndim == 2
+        assert len(bafs) == 2
+        assert bafs[0].size == bafs[1].size
+        assert gammas.shape == (len(states), bafs[0].size)
+        assert mat_haps.shape == (2, bafs[0].size)
+        assert pat_haps.shape == (2, bafs[0].size)
+
+        m = bafs[0].size
+        mat_err_score = np.zeros(m)
+        pat_err_score = np.zeros(m)
+        all_genos = [[0, 0], [0, 1], [1, 0], [1, 1]]
+
+        for i in range(m):
+            mat_h = [int(mat_haps[0, i]), int(mat_haps[1, i])]
+            pat_h = [int(pat_haps[0, i]), int(pat_haps[1, i])]
+            for j, (s0, s1) in enumerate(states):
+                w = np.exp(gammas[j, i])
+                if w < 1e-12:
+                    continue
+                m_d0 = mat_dosage(mat_h, s0)
+                p_d0 = pat_dosage(pat_h, s0)
+                m_d1 = mat_dosage(mat_h, s1)
+                p_d1 = pat_dosage(pat_h, s1)
+                called_loglik = emission_baf(
+                    bafs[0][i], m_d0, p_d0, pi0=pi0[0], std_dev=std_dev[0], k=2
+                ) + emission_baf(
+                    bafs[1][i], m_d1, p_d1, pi0=pi0[1], std_dev=std_dev[1], k=2
+                )
+                best_alt_mat = called_loglik
+                for alt_mat in all_genos:
+                    if alt_mat != mat_h:
+                        alt_loglik = emission_baf(
+                            bafs[0][i],
+                            mat_dosage(alt_mat, s0),
+                            p_d0,
+                            pi0=pi0[0],
+                            std_dev=std_dev[0],
+                            k=2,
+                        ) + emission_baf(
+                            bafs[1][i],
+                            mat_dosage(alt_mat, s1),
+                            p_d1,
+                            pi0=pi0[1],
+                            std_dev=std_dev[1],
+                            k=2,
+                        )
+                        if alt_loglik > best_alt_mat:
+                            best_alt_mat = alt_loglik
+                mat_err_score[i] += w * (best_alt_mat - called_loglik)
+                best_alt_pat = called_loglik
+                for alt_pat in all_genos:
+                    if alt_pat != pat_h:
+                        alt_loglik = emission_baf(
+                            bafs[0][i],
+                            m_d0,
+                            pat_dosage(alt_pat, s0),
+                            pi0=pi0[0],
+                            std_dev=std_dev[0],
+                            k=2,
+                        ) + emission_baf(
+                            bafs[1][i],
+                            m_d1,
+                            pat_dosage(alt_pat, s1),
+                            pi0=pi0[1],
+                            std_dev=std_dev[1],
+                            k=2,
+                        )
+                        if alt_loglik > best_alt_pat:
+                            best_alt_pat = alt_loglik
+                pat_err_score[i] += w * (best_alt_pat - called_loglik)
+
+        return mat_err_score, pat_err_score
 
     def det_recomb_sex(self, i, j):
         """Determine the parental origin of the recombination event.
@@ -1217,6 +1468,7 @@ class PocHMM(MetaHMM):
         r=1e-8,
         a=1e-2,
         unphased=False,
+        obs_err=0.0,
     ):
         """Forward algorithm for duos.
 
@@ -1230,6 +1482,7 @@ class PocHMM(MetaHMM):
             - r (`float`): intra-karyotype transition rate (recombination)
             - a (`float`): inter-karyotype transition rate
             - unphased (`bool`): run the model in unphased mode
+            - obs_err (`float`): per-site genotyping error rate for the observed parent
 
         Returns:
             - alphas (`np.array`): forward variable from hmm across k states
@@ -1253,6 +1506,7 @@ class PocHMM(MetaHMM):
         assert np.all(pos[1:] > pos[:-1])
         assert r < 0.5 and r > 0
         assert a < 0.5 and a > 0
+        assert 0.0 <= obs_err < 0.5
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
@@ -1271,6 +1525,7 @@ class PocHMM(MetaHMM):
             a=a,
             pi0=pi0,
             std_dev=std_dev,
+            obs_err=obs_err,
         )
         return alphas, scaler, self.states, self.karyotypes, loglik
 
@@ -1288,6 +1543,7 @@ class PocHMM(MetaHMM):
         r=1e-8,
         a=1e-2,
         unphased=False,
+        obs_err=0.0,
     ):
         """Backward algorithm for duos.
 
@@ -1301,9 +1557,10 @@ class PocHMM(MetaHMM):
             - r (`float`): intra-karyotype transition rate (recombination)
             - a (`float`): inter-karyotype transition rate
             - unphased (`bool`): run the model in unphased mode
+            - obs_err (`float`): per-site genotyping error rate for the observed parent
 
         Returns:
-            - alphas (`np.array`): forward variable from hmm across k states
+            - betas (`np.array`): backward variable from hmm across k states
             - scaler (`np.array`): m-length array of scale parameters
             - states (`list`): tuple representation of states
             - karyotypes (`np.array`):  array of karyotypes in the MetaHMM model
@@ -1324,6 +1581,7 @@ class PocHMM(MetaHMM):
         assert np.all(pos[1:] > pos[:-1])
         assert r < 0.5 and r > 0
         assert a < 0.5 and a > 0
+        assert 0.0 <= obs_err < 0.5
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
@@ -1342,6 +1600,7 @@ class PocHMM(MetaHMM):
             a=a,
             pi0=pi0,
             std_dev=std_dev,
+            obs_err=obs_err,
         )
         return betas, scaler, self.states, self.karyotypes, loglik
 
@@ -1359,6 +1618,7 @@ class PocHMM(MetaHMM):
         r=1e-8,
         a=1e-2,
         unphased=False,
+        obs_err=0.0,
     ):
         """Forward-backward algorithm for duos.
 
@@ -1372,13 +1632,12 @@ class PocHMM(MetaHMM):
             - r (`float`): intra-karyotype transition rate (recombination)
             - a (`float`): inter-karyotype transition rate
             - unphased (`bool`): run the model in unphased mode
+            - obs_err (`float`): per-site genotyping error rate for the observed parent
 
         Returns:
-            - alphas (`np.array`): forward variable from hmm across k states
-            - scaler (`np.array`): m-length array of scale parameters
+            - gammas (`np.array`): log posterior density of being in each of k hidden states
             - states (`list`): tuple representation of states
             - karyotypes (`np.array`):  array of karyotypes in the MetaHMM model
-            - loglik (`float`): total log-likelihood of B-allele frequency
 
         """
         alphas, _, states, karyotypes, _ = self.forward_algorithm(
@@ -1394,6 +1653,7 @@ class PocHMM(MetaHMM):
             r=r,
             a=a,
             unphased=unphased,
+            obs_err=obs_err,
         )
         betas, _, _, _, _ = self.backward_algorithm(
             bafs,
@@ -1408,6 +1668,7 @@ class PocHMM(MetaHMM):
             r=r,
             a=a,
             unphased=unphased,
+            obs_err=obs_err,
         )
         gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
         return gammas, states, karyotypes
