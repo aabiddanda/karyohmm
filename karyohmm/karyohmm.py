@@ -22,6 +22,7 @@ from karyohmm_utils import (
     backward_algo_duo,
     backward_algo_sibs,
     emission_baf,
+    emission_lrr,
     forward_algo,
     forward_algo_duo,
     forward_algo_sibs,
@@ -2239,11 +2240,20 @@ class PhaseCorrect:
         """Estimate the noise parameters under disomy for each sibling embryo."""
         assert self.embryo_bafs is not None
         hmm = MetaHMM(disomy=True)
+        m = self.pos.size
+        lrrs_missing = np.full(m, -9.0)
+        sigmas_lrr = np.ones(m)
         pi0_est_acc = np.zeros(len(self.embryo_bafs))
         sigma_est_acc = np.zeros(len(self.embryo_bafs))
         for i, baf in enumerate(self.embryo_bafs):
             pi0_est, sigma_est = hmm.est_sigma_pi0(
-                baf, self.pos, self.mat_haps, self.pat_haps, **kwargs
+                baf,
+                self.pos,
+                self.mat_haps,
+                self.pat_haps,
+                lrrs=lrrs_missing,
+                sigmas=sigmas_lrr,
+                **kwargs,
             )
             pi0_est_acc[i] = pi0_est
             sigma_est_acc[i] = sigma_est
@@ -2286,6 +2296,8 @@ class PhaseCorrect:
         pat_haps = self.pat_haps
         n_sibs = len(self.embryo_bafs)
         m = self.pos.size
+        lrrs_missing = np.full(m, -9.0)
+        sigmas_lrr = np.ones(m)
         n_mis_mat_tot = np.zeros(niter)
         n_mis_pat_tot = np.zeros(niter)
         for i in range(niter):
@@ -2294,6 +2306,8 @@ class PhaseCorrect:
             for j, baf in enumerate(self.embryo_bafs):
                 path, _, _, _ = hmm.viterbi_algorithm(
                     baf,
+                    lrrs_missing,
+                    sigmas_lrr,
                     self.pos,
                     mat_haps,
                     pat_haps,
@@ -2316,6 +2330,63 @@ class PhaseCorrect:
         self.mat_haps_fixed = mat_haps
         self.pat_haps_fixed = pat_haps
         return mat_haps, pat_haps, n_mis_mat_tot, n_mis_pat_tot
+
+    def flag_parental_genotype_errors(self, use_fixed=False, r=1e-8):
+        """Flag potential parental genotype errors using multiple euploid siblings.
+
+        Runs forward-backward under disomy for each sibling embryo and accumulates
+        the posterior-weighted log Bayes factor error scores across all siblings.
+        Genuine genotype errors are consistently flagged across siblings (same
+        parental genotype), while per-embryo noise is uncorrelated and averages out.
+
+        Arguments:
+            - use_fixed (`bool`): use phase-corrected haplotypes if available (default: False)
+            - r (`float`): recombination rate per basepair
+
+        Returns:
+            - mat_err_scores (`np.array`): m-length array of summed maternal error scores
+            - pat_err_scores (`np.array`): m-length array of summed paternal error scores
+
+        """
+        assert self.embryo_bafs is not None
+        assert self.embryo_pi0s is not None, "Call est_sigma_pi0s first"
+        if use_fixed:
+            assert self.mat_haps_fixed is not None, "Call viterbi_phase_correct first"
+            mat_haps = self.mat_haps_fixed
+            pat_haps = self.pat_haps_fixed
+        else:
+            mat_haps = self.mat_haps
+            pat_haps = self.pat_haps
+        m = self.pos.size
+        lrrs_missing = np.full(m, -9.0)
+        sigmas_lrr = np.ones(m)
+        hmm = MetaHMM(disomy=True)
+        mat_err_scores = np.zeros(m)
+        pat_err_scores = np.zeros(m)
+        for j, baf in enumerate(self.embryo_bafs):
+            gammas, states, _ = hmm.forward_backward(
+                baf,
+                lrrs_missing,
+                sigmas_lrr,
+                self.pos,
+                mat_haps,
+                pat_haps,
+                pi0=self.embryo_pi0s[j],
+                std_dev=self.embryo_sigmas[j],
+                r=r,
+            )
+            mat_err_j, pat_err_j = hmm.flag_parental_genotype_errors(
+                gammas,
+                states,
+                baf,
+                mat_haps,
+                pat_haps,
+                pi0=self.embryo_pi0s[j],
+                std_dev=self.embryo_sigmas[j],
+            )
+            mat_err_scores += mat_err_j
+            pat_err_scores += pat_err_j
+        return mat_err_scores, pat_err_scores
 
     def estimate_switch_err_true(self, maternal=True, fixed=False):
         """Estimate the switch error from true and inferred haplotypes.

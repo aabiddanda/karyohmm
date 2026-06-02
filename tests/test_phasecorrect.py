@@ -111,6 +111,40 @@ def test_phase_perfect_viterbi(data):
 @pytest.mark.parametrize(
     "data",
     [
+        data_disomy_sibs_null,
+        data_disomy_sibs_test_1percent,
+    ],
+)
+def test_flag_parental_genotype_errors(data):
+    """Test flag_parental_genotype_errors aggregates scores across siblings."""
+    phase_correct = PhaseCorrect(
+        mat_haps=data["mat_haps_real"], pat_haps=data["pat_haps_real"], pos=data["pos"]
+    )
+    phase_correct.add_baf(
+        embryo_bafs=[data[f"baf_embryo{i}"] for i in range(data["nsibs"])]
+    )
+    phase_correct.est_sigma_pi0s()
+    mat_err, pat_err = phase_correct.flag_parental_genotype_errors()
+    assert mat_err.shape == (data["pos"].size,)
+    assert pat_err.shape == (data["pos"].size,)
+    assert np.all(mat_err >= 0)
+    assert np.all(pat_err >= 0)
+    assert np.all(np.isfinite(mat_err))
+    assert np.all(np.isfinite(pat_err))
+    # Scores after phase correction should still be valid
+    phase_correct.viterbi_phase_correct(niter=2)
+    mat_err_fixed, pat_err_fixed = phase_correct.flag_parental_genotype_errors(
+        use_fixed=True
+    )
+    assert mat_err_fixed.shape == (data["pos"].size,)
+    assert pat_err_fixed.shape == (data["pos"].size,)
+    assert np.all(mat_err_fixed >= 0)
+    assert np.all(pat_err_fixed >= 0)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
         data_disomy_sibs_test_1percent,
         data_disomy_sibs_test_3percent,
     ],

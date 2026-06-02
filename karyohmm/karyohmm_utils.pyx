@@ -744,7 +744,7 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
     for j in range(m):
         f = freqs[0]
         if f < 0:
-            geno_freq = (1/3,1/3,1/3)
+            geno_freq = (1/3, 1/3, 1/3)
         else:
             geno_freq = ((1 - f)**2, 2*f*(1-f), f**2)
         if obs_err > 0.0:
@@ -796,7 +796,7 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
         for j in range(m):
             f = freqs[i]
             if f < 0:
-                geno_freq = (1/3,1/3,1/3)
+                geno_freq = (1/3, 1/3, 1/3)
             else:
                 geno_freq = ((1 - f)**2, 2*f*(1-f), f**2)
             if obs_err > 0.0:

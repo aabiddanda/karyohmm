@@ -1,9 +1,11 @@
 """CLI for karyohmm applied to products-of-conception."""
 
+import gzip as gz
 import logging
 
-import rich_click as click
 import numpy as np
+import polars as pl
+import rich_click as click
 
 from karyohmm import DataReader, PocHMM, MetaHMM
 
@@ -129,17 +131,19 @@ def main(
     kar_dfs = []
     path_dfs = []
     gamma_dfs = []
-    # The unique chromosomes present in this dataset and the specific
-    uniq_chroms = np.unique(data_df["chrom"])
+    uniq_chroms = data_df["chrom"].unique().sort().to_list()
     for c in uniq_chroms:
         logging.info(f"Starting inference of karyohmm emission parameters for {c}.")
-        cur_df = data_df[data_df["chrom"] == c].sort_values("pos")
+        cur_df = data_df.filter(pl.col("chrom") == c).sort("pos")
         if mode == "Meta":
-            # Defining the numpy objects to test out.
-            mat_haps = np.vstack([cur_df.mat_hap0.values, cur_df.mat_hap1.values])
-            pat_haps = np.vstack([cur_df.pat_hap0.values, cur_df.pat_hap1.values])
-            bafs = cur_df.baf.values
-            pos = cur_df.pos.values
+            mat_haps = np.vstack(
+                [cur_df["mat_hap0"].to_numpy(), cur_df["mat_hap1"].to_numpy()]
+            )
+            pat_haps = np.vstack(
+                [cur_df["pat_hap0"].to_numpy(), cur_df["pat_hap1"].to_numpy()]
+            )
+            bafs = cur_df["baf"].to_numpy()
+            pos = cur_df["pos"].to_numpy()
             if thin > 1:
                 pi0_est, sigma_est = hmm.est_sigma_pi0(
                     bafs=bafs[::thin],
@@ -180,20 +184,22 @@ def main(
             kar_prob["pi0_hat"] = pi0_est
             kar_prob["sigma_hat"] = sigma_est
             kar_prob["chrom"] = c
-            df = pd.DataFrame(kar_prob, index=[0])
-            kar_dfs.append(df)
+            kar_dfs.append(pl.DataFrame({k: [v] for k, v in kar_prob.items()}))
             state_lbls = [hmm.get_state_str(s) for s in states]
-            gamma_df = pd.DataFrame(gammas.T)
-            gamma_df.columns = state_lbls
-            gamma_df["chrom"] = cur_df["chrom"].values
-            gamma_df["pos"] = cur_df["pos"].values
-            gamma_df["pi0_hat"] = pi0_est
-            gamma_df["sigma_hat"] = sigma_est
+            gamma_df = pl.DataFrame(
+                {lbl: gammas[i, :] for i, lbl in enumerate(state_lbls)}
+            )
+            gamma_df = gamma_df.with_columns(
+                cur_df["chrom"],
+                cur_df["pos"],
+                pl.lit(pi0_est).alias("pi0_hat"),
+                pl.lit(sigma_est).alias("sigma_hat"),
+            )
             cols_to_move = ["chrom", "pos", "pi0_hat", "sigma_hat"]
-            gamma_df = gamma_df[
+            gamma_df = gamma_df.select(
                 cols_to_move
                 + [col for col in gamma_df.columns if col not in cols_to_move]
-            ]
+            )
             gamma_dfs.append(gamma_df)
             if viterbi:
                 logging.info(f"Starting Viterbi algorithm tracing for {c} ...")
@@ -213,30 +219,36 @@ def main(
                 path_mat = np.zeros(shape=(n, ns), dtype=np.int32)
                 for i, p in enumerate(path):
                     path_mat[i, p] = 1
-                path_df = pd.DataFrame(path_mat)
-                path_df.columns = state_lbls
-                path_df["pi0_hat"] = pi0_est
-                path_df["sigma_hat"] = sigma_est
-                path_df["chrom"] = cur_df.chrom.values
-                path_df["pos"] = cur_df.pos.values
+                path_df = pl.DataFrame(
+                    {lbl: path_mat[:, i] for i, lbl in enumerate(state_lbls)}
+                )
+                path_df = path_df.with_columns(
+                    cur_df["chrom"],
+                    cur_df["pos"],
+                    pl.lit(pi0_est).alias("pi0_hat"),
+                    pl.lit(sigma_est).alias("sigma_hat"),
+                )
                 cols_to_move = ["chrom", "pos", "pi0_hat", "sigma_hat"]
-                path_df = path_df[
+                path_df = path_df.select(
                     cols_to_move
                     + [col for col in path_df.columns if col not in cols_to_move]
-                ]
+                )
                 path_dfs.append(path_df)
         if mode == "Duo":
-            # Defining the numpy objects to test out.
             if data_reader.duo_maternal:
-                haps = np.vstack([cur_df.mat_hap0.values, cur_df.mat_hap1.values])
+                haps = np.vstack(
+                    [cur_df["mat_hap0"].to_numpy(), cur_df["mat_hap1"].to_numpy()]
+                )
             else:
-                haps = np.vstack([cur_df.pat_hap0.values, cur_df.pat_hap1.values])
-            bafs = cur_df.baf.values
-            pos = cur_df.pos.values
+                haps = np.vstack(
+                    [cur_df["pat_hap0"].to_numpy(), cur_df["pat_hap1"].to_numpy()]
+                )
+            bafs = cur_df["baf"].to_numpy()
+            pos = cur_df["pos"].to_numpy()
             ps = None
             if "af" in cur_df.columns:
-                if not np.any(np.isnan(cur_df["af"].values)):
-                    ps = cur_df["af"].values
+                if not cur_df["af"].is_nan().any():
+                    ps = cur_df["af"].to_numpy()
             if thin > 1:
                 pi0_est, sigma_est = hmm.est_sigma_pi0(
                     bafs=bafs[::thin],
@@ -277,43 +289,65 @@ def main(
             kar_prob["pi0_hat"] = pi0_est
             kar_prob["sigma_hat"] = sigma_est
             kar_prob["chrom"] = c
-            df = pd.DataFrame(kar_prob, index=[0])
-            kar_dfs.append(df)
+            kar_dfs.append(pl.DataFrame({k: [v] for k, v in kar_prob.items()}))
             state_lbls = [hmm.get_state_str(s) for s in states]
-            gamma_df = pd.DataFrame(gammas.T)
-            gamma_df.columns = state_lbls
-            gamma_df["chrom"] = cur_df["chrom"].values
-            gamma_df["pos"] = cur_df["pos"].values
-            gamma_df["pi0_hat"] = pi0_est
-            gamma_df["sigma_hat"] = sigma_est
+            gamma_df = pl.DataFrame(
+                {lbl: gammas[i, :] for i, lbl in enumerate(state_lbls)}
+            )
+            gamma_df = gamma_df.with_columns(
+                cur_df["chrom"],
+                cur_df["pos"],
+                pl.lit(pi0_est).alias("pi0_hat"),
+                pl.lit(sigma_est).alias("sigma_hat"),
+            )
             cols_to_move = ["chrom", "pos", "pi0_hat", "sigma_hat"]
-            gamma_df = gamma_df[
+            gamma_df = gamma_df.select(
                 cols_to_move
                 + [col for col in gamma_df.columns if col not in cols_to_move]
-            ]
+            )
             gamma_dfs.append(gamma_df)
 
     if mode == "Meta":
         out_fp = f"{out}.meta.posterior.tsv.gz" if gzip else f"{out}.meta.posterior.tsv"
-        kar_df = pd.concat(kar_dfs)
-        kar_df.to_csv(out_fp, sep="\t", index=None)
+        kar_df = pl.concat(kar_dfs)
+        if gzip:
+            with gz.open(out_fp, "wb") as f:
+                kar_df.write_csv(f, separator="\t")
+        else:
+            kar_df.write_csv(out_fp, separator="\t")
         logging.info(f"Wrote full posterior karyotypes to {out_fp}!")
-        gamma_df = pd.concat(gamma_dfs)
+        gamma_df = pl.concat(gamma_dfs)
         out_fp = f"{out}.meta.gammas.tsv.gz" if gzip else f"{out}.meta.gammas.tsv"
-        gamma_df.to_csv(out_fp, sep="\t", index=None)
+        if gzip:
+            with gz.open(out_fp, "wb") as f:
+                gamma_df.write_csv(f, separator="\t")
+        else:
+            gamma_df.write_csv(out_fp, separator="\t")
         logging.info(f"Wrote per-site forward-backward algorithm results to {out_fp}")
         if viterbi:
-            path_df = pd.concat(path_dfs)
+            path_df = pl.concat(path_dfs)
             out_fp = f"{out}.meta.viterbi.tsv.gz" if gzip else f"{out}.meta.viterbi.tsv"
-            path_df.to_csv(out_fp, sep="\t", index=None)
+            if gzip:
+                with gz.open(out_fp, "wb") as f:
+                    path_df.write_csv(f, separator="\t")
+            else:
+                path_df.write_csv(out_fp, separator="\t")
             logging.info(f"Wrote Viterbi algorithm traceback to {out_fp}")
     if mode == "Duo":
         out_fp = f"{out}.duo.posterior.tsv.gz" if gzip else f"{out}.duo.posterior.tsv"
-        kar_df = pd.concat(kar_dfs)
-        kar_df.to_csv(out_fp, sep="\t", index=None)
+        kar_df = pl.concat(kar_dfs)
+        if gzip:
+            with gz.open(out_fp, "wb") as f:
+                kar_df.write_csv(f, separator="\t")
+        else:
+            kar_df.write_csv(out_fp, separator="\t")
         logging.info(f"Wrote full posterior karyotypes to {out_fp}")
-        gamma_df = pd.concat(gamma_dfs)
+        gamma_df = pl.concat(gamma_dfs)
         out_fp = f"{out}.duo.gammas.tsv.gz" if gzip else f"{out}.duo.gammas.tsv"
-        gamma_df.to_csv(out_fp, sep="\t", index=None)
+        if gzip:
+            with gz.open(out_fp, "wb") as f:
+                gamma_df.write_csv(f, separator="\t")
+        else:
+            gamma_df.write_csv(out_fp, separator="\t")
         logging.info(f"Wrote per-site forward-backward algorithm results to {out_fp}")
     logging.info("Finished karyohmm analysis!")
