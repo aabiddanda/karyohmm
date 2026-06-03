@@ -155,7 +155,7 @@ class AneuploidyHMM:
 class MetaHMM(AneuploidyHMM):
     """A meta-HMM that evaluates all possible ploidy states for allele intensity data."""
 
-    def __init__(self, disomy=False):
+    def __init__(self, disomy=False, upd=False):
         """Initialize the MetaHMM class for determining chromosomal aneuploidy.
 
         Arguments:
@@ -193,45 +193,104 @@ class MetaHMM(AneuploidyHMM):
             (0, -1, 1, 1),
             (1, -1, 1, 1),
         ]
+        self.m_upd_states = [
+            (0, 0, -1, -1),
+            (1, 1, -1, -1),
+            (0, 1, -1, -1),
+            (1, 0, -1, -1),
+        ]
+        self.p_upd_states = [
+            (-1, -1, 0, 0),
+            (-1, -1, 1, 1),
+            (-1, -1, 0, 1),
+            (-1, -1, 1, 0),
+        ]
         if disomy:
             self.aploid = "disomy"
             self.states = self.disomy_states
             self.karyotypes = np.array(["2", "2", "2", "2"], dtype=str)
         else:
-            self.states = (
-                self.nullisomy_state
-                + self.m_monosomy_states
-                + self.p_monosomy_states
-                + self.disomy_states
-                + self.m_trisomy_states
-                + self.p_trisomy_states
-            )
-            self.karyotypes = np.array(
-                [
-                    "0",
-                    "1m",
-                    "1m",
-                    "1p",
-                    "1p",
-                    "2",
-                    "2",
-                    "2",
-                    "2",
-                    "3m",
-                    "3m",
-                    "3m",
-                    "3m",
-                    "3m",
-                    "3m",
-                    "3p",
-                    "3p",
-                    "3p",
-                    "3p",
-                    "3p",
-                    "3p",
-                ],
-                dtype=str,
-            )
+            if upd:
+                self.aploid = "meta+upd"
+                self.states = (
+                    self.nullisomy_state
+                    + self.m_monosomy_states
+                    + self.p_monosomy_states
+                    + self.disomy_states
+                    + self.m_trisomy_states
+                    + self.p_trisomy_states
+                    + self.p_upd_states,
+                    +self.m_upd_states,
+                )
+                self.karyotypes = np.array(
+                    [
+                        "0",
+                        "1m",
+                        "1m",
+                        "1p",
+                        "1p",
+                        "2",
+                        "2",
+                        "2",
+                        "2",
+                        "3m",
+                        "3m",
+                        "3m",
+                        "3m",
+                        "3m",
+                        "3m",
+                        "3p",
+                        "3p",
+                        "3p",
+                        "3p",
+                        "3p",
+                        "3p",
+                        "2p0",
+                        "2p0",
+                        "2p1",
+                        "2p1",
+                        "2m0",
+                        "2m0",
+                        "2m1",
+                        "2m1",
+                    ],
+                    dtype=str,
+                )
+            else:
+                self.states = (
+                    self.nullisomy_state
+                    + self.m_monosomy_states
+                    + self.p_monosomy_states
+                    + self.disomy_states
+                    + self.m_trisomy_states
+                    + self.p_trisomy_states
+                )
+                self.karyotypes = np.array(
+                    [
+                        "0",
+                        "1m",
+                        "1m",
+                        "1p",
+                        "1p",
+                        "2",
+                        "2",
+                        "2",
+                        "2",
+                        "3m",
+                        "3m",
+                        "3m",
+                        "3m",
+                        "3m",
+                        "3m",
+                        "3p",
+                        "3p",
+                        "3p",
+                        "3p",
+                        "3p",
+                        "3p",
+                    ],
+                    dtype=str,
+                )
 
     def forward_algorithm(
         self,
