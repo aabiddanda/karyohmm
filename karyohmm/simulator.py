@@ -58,6 +58,33 @@ class PGTSimBase:
         # NOTE: assuming diploid here ...
         return np.vstack([mat_h1, mat_h2]), np.vstack([pat_h1, pat_h2]), ps
 
+    def create_genotyping_errors(self, haps, err_rate=1e-3, seed=42):
+        """Create genotyping errors in haplotypes sampled.
+
+        Args:
+            haps (`np.array`): haplotype array from either maternal or paternal
+            err_rate (`float`): site-level error rate in genotyping
+            seed (`int`): random seed
+
+        Output:
+            err_idx (`np.array`): m-length array indicating simulated errors
+            err_haps (`np.array`): haplotypes which reflect newly simulated errors
+
+        """
+        assert haps.ndim == 2
+        assert haps.shape[0] == 2
+        assert (err_rate >= 0) and (err_rate <= 0.5)
+        assert seed > 0
+        m = haps.shape[1]
+        err_idx = np.random.uniform(size=m) <= err_rate
+        err_haps = haps.copy()
+        for j in np.where(err_idx)[0]:
+            if np.random.uniform() <= 0.5:
+                err_haps[0, j] = np.abs(haps[0, j] - 1)
+            else:
+                err_haps[1, j] = np.abs(haps[1, j] - 1)
+        return err_idx, err_haps
+
     def create_switch_errors_help(self, haps, err_rate=1e-3, seed=42):
         """Revised method to create switch errors.
 
@@ -573,6 +600,7 @@ class PGTSim(PGTSimBase):
         a=10.0,
         b=10.0,
         switch_err_rate=1e-2,
+        err_rate=1e-3,
         seed=42,
     ):
         """Simulate a single embryo with a given ploidy status."""
@@ -612,6 +640,13 @@ class PGTSim(PGTSimBase):
         ) = self.create_switch_errors(
             mat_haps, pat_haps, err_rate=switch_err_rate, seed=seed
         )
+        mat_err_idx, mat_haps_err = self.create_genotyping_errors(
+            mat_haps_prime, err_rate=err_rate, seed=seed
+        )
+        pat_err_idx, pat_haps_err = self.create_genotyping_errors(
+            pat_haps_prime, err_rate=err_rate, seed=seed
+        )
+
         if reads:
             geno, alt_reads, ref_reads = self.sim_read_counts(
                 mat_hap1,
@@ -650,8 +685,12 @@ class PGTSim(PGTSimBase):
             "pat_haps": pat_haps,
             "mat_haps_prime": mat_haps_prime,
             "pat_haps_prime": pat_haps_prime,
+            "mat_haps_err": mat_haps_err,
+            "pat_haps_err": pat_haps_err,
             "mat_switch": mat_switch,
             "pat_switch": pat_switch,
+            "mat_err": mat_err_idx,
+            "pat_err": pat_err_idx,
             "zs_maternal": zs_maternal,
             "zs_paternal": zs_paternal,
             "geno_embryo": geno,
