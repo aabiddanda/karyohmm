@@ -729,6 +729,7 @@ class PGTSim(PGTSimBase):
         a=10.0,
         b=10.0,
         switch_err_rate=1e-2,
+        err_rate=1e-3,
         seed=42,
     ):
         """Simulate euploid sibling embryos."""
@@ -750,12 +751,22 @@ class PGTSim(PGTSimBase):
             mat_haps, pat_haps, err_rate=switch_err_rate, seed=seed
         )
         pos = np.sort(np.random.uniform(high=length, size=m))
+        mat_err_idx, mat_haps_err = self.create_genotyping_errors(
+            mat_haps_prime, err_rate=err_rate, seed=seed
+        )
+        pat_err_idx, pat_haps_err = self.create_genotyping_errors(
+            pat_haps_prime, err_rate=err_rate, seed=seed
+        )
         res_table["mat_haps_true"] = mat_haps
         res_table["pat_haps_true"] = pat_haps
         res_table["mat_haps_real"] = mat_haps_prime
         res_table["pat_haps_real"] = pat_haps_prime
+        res_table["mat_haps_err"] = mat_haps_err
+        res_table["pat_haps_err"] = pat_haps_err
         res_table["mat_switch"] = mat_switch
         res_table["pat_switch"] = pat_switch
+        res_table["mat_err"] = mat_err_idx
+        res_table["pat_err"] = pat_err_idx
         res_table["af"] = ps
         res_table["m"] = m
         res_table["nsibs"] = nsibs
@@ -836,6 +847,7 @@ class PGTSim(PGTSimBase):
         a=10.0,
         b=10.0,
         switch_err_rate=1e-2,
+        err_rate=1e-3,
         seed=42,
     ):
         """Simulate data from pre-existing haplotype data."""
@@ -855,6 +867,12 @@ class PGTSim(PGTSimBase):
             pat_switch,
         ) = self.create_switch_errors(
             mat_haps, pat_haps, err_rate=switch_err_rate, seed=seed
+        )
+        mat_err_idx, mat_haps_err = self.create_genotyping_errors(
+            mat_haps_prime, err_rate=err_rate, seed=seed
+        )
+        pat_err_idx, pat_haps_err = self.create_genotyping_errors(
+            pat_haps_prime, err_rate=err_rate, seed=seed
         )
         if reads:
             geno, alt_reads, ref_reads = self.sim_read_counts(
@@ -893,8 +911,12 @@ class PGTSim(PGTSimBase):
             "pat_haps": pat_haps,
             "mat_haps_prime": mat_haps_prime,
             "pat_haps_prime": pat_haps_prime,
+            "mat_haps_err": mat_haps_err,
+            "pat_haps_err": pat_haps_err,
             "mat_switch": mat_switch,
             "pat_switch": pat_switch,
+            "mat_err": mat_err_idx,
+            "pat_err": pat_err_idx,
             "zs_maternal": zs_maternal,
             "zs_paternal": zs_paternal,
             "geno_embryo": geno,
@@ -961,6 +983,7 @@ class PGTSimMosaic(PGTSimBase):
         mix_prop=0.3,
         alpha=1.0,
         switch_err_rate=1e-2,
+        err_rate=1e-3,
         seed=42,
     ):
         """Simulate BAF from a mixture of ploidies."""
@@ -976,6 +999,12 @@ class PGTSimMosaic(PGTSimBase):
         mat_haps, pat_haps, ps = self.draw_parental_genotypes(afs=afs, m=m, seed=seed)
         mat_haps_prime, pat_haps_prime, _, _ = self.create_switch_errors(
             mat_haps, pat_haps, err_rate=switch_err_rate, seed=seed
+        )
+        mat_err_idx, mat_haps_err = self.create_genotyping_errors(
+            mat_haps_prime, err_rate=err_rate, seed=seed
+        )
+        pat_err_idx, pat_haps_err = self.create_genotyping_errors(
+            pat_haps_prime, err_rate=err_rate, seed=seed
         )
         # 2. Draw cells from a distribution of ploidies
         mix_ploidies = np.random.choice(ploidies, p=props, size=ncells)
@@ -1026,6 +1055,10 @@ class PGTSimMosaic(PGTSimBase):
             "pat_haps": pat_haps,
             "mat_haps_prime": mat_haps_prime,
             "pat_haps_prime": pat_haps_prime,
+            "mat_haps_err": mat_haps_err,
+            "pat_haps_err": pat_haps_err,
+            "mat_err": mat_err_idx,
+            "pat_err": pat_err_idx,
             "geno_embryo_bulk": genos,
             "baf_embryo_bulk": bafs,
             "lrr_embryo_bulk": lrrs,
@@ -1060,6 +1093,7 @@ class PGTSimMosaic(PGTSimBase):
         mix_prop=0.3,
         alpha=1.0,
         switch_err_rate=1e-2,
+        err_rate=1e-3,
         seed=42,
     ):
         """Simulate mosaic aneuploidies from known parental haplotypes."""
@@ -1071,6 +1105,12 @@ class PGTSimMosaic(PGTSimBase):
         m = pos.size
         mat_haps_prime, pat_haps_prime, _, _ = self.create_switch_errors(
             mat_haps, pat_haps, err_rate=switch_err_rate, seed=seed
+        )
+        mat_err_idx, mat_haps_err = self.create_genotyping_errors(
+            mat_haps_prime, err_rate=err_rate, seed=seed
+        )
+        pat_err_idx, pat_haps_err = self.create_genotyping_errors(
+            pat_haps_prime, err_rate=err_rate, seed=seed
         )
         # 2. Draw cells from a distribution of ploidies
         mix_ploidies = np.random.choice(ploidies, p=props, size=ncells)
@@ -1121,6 +1161,10 @@ class PGTSimMosaic(PGTSimBase):
             "pat_haps": pat_haps,
             "mat_haps_prime": mat_haps_prime,
             "pat_haps_prime": pat_haps_prime,
+            "mat_haps_err": mat_haps_err,
+            "pat_haps_err": pat_haps_err,
+            "mat_err": mat_err_idx,
+            "pat_err": pat_err_idx,
             "geno_embryo_bulk": genos,
             "baf_embryo_bulk": bafs,
             "lrr_embryo_bulk": lrrs,
@@ -1452,6 +1496,7 @@ class PGTSimSegmental(PGTSimBase):
         a=10.0,
         b=10.0,
         switch_err_rate=1e-2,
+        err_rate=1e-3,
         seed=42,
     ):
         """Conduct a full simulation of segmental aneuploidies conditional on parental haplotypes."""
@@ -1515,6 +1560,12 @@ class PGTSimSegmental(PGTSimBase):
         ) = self.create_switch_errors(
             mat_haps, pat_haps, err_rate=switch_err_rate, seed=seed
         )
+        mat_err_idx, mat_haps_err = self.create_genotyping_errors(
+            mat_haps_prime, err_rate=err_rate, seed=seed
+        )
+        pat_err_idx, pat_haps_err = self.create_genotyping_errors(
+            pat_haps_prime, err_rate=err_rate, seed=seed
+        )
         assert geno.size == m
         assert baf.size == m
         res_table = {
@@ -1522,6 +1573,10 @@ class PGTSimSegmental(PGTSimBase):
             "pat_haps": pat_haps,
             "mat_haps_prime": mat_haps_prime,
             "pat_haps_prime": pat_haps_prime,
+            "mat_haps_err": mat_haps_err,
+            "pat_haps_err": pat_haps_err,
+            "mat_err": mat_err_idx,
+            "pat_err": pat_err_idx,
             "ploidies": ploidies,
             "seg_aneuploidy_type": aneu_type,
             "seg_start": start,
@@ -1555,6 +1610,7 @@ class PGTSimSegmental(PGTSimBase):
         a=10.0,
         b=10.0,
         switch_err_rate=1e-2,
+        err_rate=1e-3,
         seed=42,
     ):
         """Simulate a segmental aneuploidy from known haplotypes."""
@@ -1614,11 +1670,21 @@ class PGTSimSegmental(PGTSimBase):
         ) = self.create_switch_errors(
             mat_haps, pat_haps, err_rate=switch_err_rate, seed=seed
         )
+        mat_err_idx, mat_haps_err = self.create_genotyping_errors(
+            mat_haps_prime, err_rate=err_rate, seed=seed
+        )
+        pat_err_idx, pat_haps_err = self.create_genotyping_errors(
+            pat_haps_prime, err_rate=err_rate, seed=seed
+        )
         res_table = {
             "mat_haps": mat_haps,
             "pat_haps": pat_haps,
             "mat_haps_prime": mat_haps_prime,
             "pat_haps_prime": pat_haps_prime,
+            "mat_haps_err": mat_haps_err,
+            "pat_haps_err": pat_haps_err,
+            "mat_err": mat_err_idx,
+            "pat_err": pat_err_idx,
             "ploidies": ploidies,
             "seg_aneuploidy_type": aneu_type,
             "seg_start": start,
