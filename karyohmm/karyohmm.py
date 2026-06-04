@@ -16,6 +16,8 @@ Modules available are:
 
 """
 
+import warnings
+
 import numpy as np
 from karyohmm_utils import (
     backward_algo,
@@ -219,8 +221,8 @@ class MetaHMM(AneuploidyHMM):
                     + self.disomy_states
                     + self.m_trisomy_states
                     + self.p_trisomy_states
-                    + self.p_upd_states,
-                    +self.m_upd_states,
+                    + self.p_upd_states
+                    + self.m_upd_states
                 )
                 self.karyotypes = np.array(
                     [
@@ -291,6 +293,18 @@ class MetaHMM(AneuploidyHMM):
                     ],
                     dtype=str,
                 )
+
+    def _warn_missing_lrr(self, lrrs):
+        """Warn when UPD states are active but LRR data is absent."""
+        if self.aploid == "meta+upd" and np.all(lrrs == -9.0):
+            warnings.warn(
+                "All LRR values are missing (sentinel -9.0) but UPD states are "
+                "included in the model. UPD states share copy number 2 with disomy "
+                "and rely primarily on BAF patterns when LRR is unavailable, which "
+                "may reduce power to distinguish UPD from normal disomy.",
+                UserWarning,
+                stacklevel=3,
+            )
 
     def forward_algorithm(
         self,
@@ -479,6 +493,7 @@ class MetaHMM(AneuploidyHMM):
             - karyotypes (`np.array`):  array of karyotypes in the model
 
         """
+        self._warn_missing_lrr(lrrs)
         alphas, _, states, karyotypes, _ = self.forward_algorithm(
             bafs,
             lrrs,
@@ -550,6 +565,7 @@ class MetaHMM(AneuploidyHMM):
             - psi (`np.array`): storage vector for psi variable
 
         """
+        self._warn_missing_lrr(lrrs)
         assert bafs.ndim == 1
         assert lrrs.ndim == 1
         assert sigmas.ndim == 1
