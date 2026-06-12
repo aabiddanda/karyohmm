@@ -37,6 +37,43 @@ _all_data = [
     data_pat_origin_mono,
 ]
 
+# --- Reference-panel test data ---
+# Simulate a reference panel of 200 haplotypes (100 diploid samples), then draw
+# maternal and paternal haplotypes directly from that panel to simulate an embryo.
+# This mirrors realistic usage of sim_haplotype_ref_panel + infer_missing_af.
+np.random.seed(7)
+_base_haps, _, _ = pgt_sim.draw_parental_genotypes(m=1000, seed=7)
+_base_pos = np.sort(np.random.uniform(high=1e7, size=1000))
+_ref_panel_200 = pgt_sim.sim_haplotype_ref_panel(
+    _base_haps, _base_pos, panel_size=200, seed=7
+)
+# Rows 0-1 → maternal haplotypes; rows 2-3 → paternal haplotypes
+_panel_mat = _ref_panel_200[:2, :].astype(np.uint16)
+_panel_pat = _ref_panel_200[2:4, :].astype(np.uint16)
+_, _, _panel_mat_hap1, _panel_pat_hap1, _panel_aploid = pgt_sim.sim_haplotype_paths(
+    _panel_mat, _panel_pat, _base_pos, ploidy=2, seed=7
+)
+_, _panel_baf = pgt_sim.sim_b_allele_freq(
+    _panel_mat_hap1, _panel_pat_hap1, ploidy=2, std_dev=0.1, mix_prop=0.7, seed=7
+)
+_panel_lrr, _panel_sigmas = pgt_sim.sim_logR_ratio(
+    _panel_mat_hap1, _panel_pat_hap1, ploidy=2, seed=7
+)
+data_from_ref_panel = {
+    "mat_haps": _panel_mat,
+    "pat_haps": _panel_pat,
+    "baf": _panel_baf,
+    "lrr": _panel_lrr,
+    "sigmas": _panel_sigmas,
+    "pos": _base_pos,
+    "aploid": _panel_aploid,
+    "ref_panel": _ref_panel_200,
+}
+
+# Map karyotype labels to integer ploidy levels (for tests that check ploidy
+# without requiring exact parental-origin identification).
+_PLOIDY_LEVEL = {"0": 0, "1m": 1, "1p": 1, "2": 2, "3m": 3, "3p": 3}
+
 
 def bph(states):
     """Identify states that are BPH - both parental homologs."""
@@ -225,3 +262,135 @@ def test_pochmm_ploidy_correctness(data, use_lrr):
         assert x in post_dict
     max_post = max(post_dict.values())
     assert post_dict[data["aploid"]] == max_post
+
+
+@pytest.mark.parametrize("use_lrr", [True, False], ids=["with_lrr", "no_lrr"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        data_disomy,
+        data_mat_trisomy,
+        data_pat_trisomy,
+        data_mat_origin_mono,
+        data_pat_origin_mono,
+    ],
+    ids=["disomy", "mat_trisomy", "pat_trisomy", "mat_origin_mono", "pat_origin_mono"],
+)
+def test_pochmm_ploidy_correctness_uniform_freqs(data, use_lrr):
+    """Ploidy level is correctly identified using a uniform (even) prior on allele frequencies.
+
+    With freqs=0.5 at all sites the model lacks information to distinguish parental
+    origin, so only the integer ploidy level (0/1/2/3) is asserted.
+    """
+    baf = data["baf"]
+    lrr = data["lrr"] if use_lrr else np.repeat(-9.0, baf.size)
+    sigmas = data["sigmas"] if use_lrr else np.ones(baf.size)
+    freqs = np.full(baf.size, 0.5)
+    hmm = PocHMM()
+    gammas, _, karyotypes = hmm.forward_backward(
+        bafs=baf,
+        lrrs=lrr,
+        sigmas=sigmas,
+        pos=data["pos"],
+        haps=data["mat_haps"],
+        pi0=0.7,
+        std_dev=0.1,
+        freqs=freqs,
+    )
+    assert np.all(np.isclose(np.sum(np.exp(gammas), axis=0), 1.0))
+    post_dict = hmm.posterior_karyotypes(gammas, karyotypes)
+    for x in ["0", "1m", "1p", "2", "3m", "3p"]:
+        assert x in post_dict
+    best = max(post_dict, key=post_dict.get)
+    assert _PLOIDY_LEVEL[str(best)] == _PLOIDY_LEVEL[str(data["aploid"])]
+
+
+def test_pochmm_ploidy_correctness_from_ref_panel():
+    """Exact karyotype is recovered when parents are drawn from a haplotype reference panel
+    and paternal allele frequencies are inferred via infer_missing_af instead of using
+    the true paternal haplotypes.
+
+    Setup: 200 haplotypes (100 diploid samples) are simulated with
+    sim_haplotype_ref_panel; rows 0-1 become the maternal haplotypes and rows 2-3
+    the paternal haplotypes for the embryo simulation.
+    """
+    data = data_from_ref_panel
+    hmm = PocHMM()
+    mat_geno = data["mat_haps"].sum(axis=0).astype(np.int32)
+    freqs = hmm.infer_missing_af(data["baf"], mat_geno, data["ref_panel"], data["pos"])
+    assert freqs.shape == data["baf"].shape
+    assert np.all((freqs >= 0.0) & (freqs <= 1.0))
+    gammas, _, karyotypes = hmm.forward_backward(
+        bafs=data["baf"],
+        lrrs=data["lrr"],
+        sigmas=data["sigmas"],
+        pos=data["pos"],
+        haps=data["mat_haps"],
+        pi0=0.7,
+        std_dev=0.1,
+        freqs=freqs,
+    )
+    assert np.all(np.isclose(np.sum(np.exp(gammas), axis=0), 1.0))
+    post_dict = hmm.posterior_karyotypes(gammas, karyotypes)
+    for x in ["0", "1m", "1p", "2", "3m", "3p"]:
+        assert x in post_dict
+    assert post_dict[data["aploid"]] == max(post_dict.values())
+
+
+def test_infer_missing_af_properties():
+    """infer_missing_af returns a valid allele-frequency array of the correct shape."""
+    baf = data_disomy["baf"]
+    mat_geno = data_disomy["mat_haps"].sum(axis=0).astype(np.int32)
+    panel = pgt_sim.sim_haplotype_ref_panel(
+        data_disomy["mat_haps"], data_disomy["pos"], panel_size=50, seed=1
+    )
+    hmm = PocHMM()
+    freqs = hmm.infer_missing_af(baf, mat_geno, panel, data_disomy["pos"])
+    assert freqs.shape == baf.shape
+    assert np.all((freqs >= 0.0) & (freqs <= 1.0))
+    assert not np.any(np.isnan(freqs))
+
+
+def test_infer_missing_af_no_anchors_fallback():
+    """infer_missing_af falls back to the panel mean when no anchor sites exist."""
+    baf = data_disomy["baf"]
+    panel = pgt_sim.sim_haplotype_ref_panel(
+        data_disomy["mat_haps"], data_disomy["pos"], panel_size=50, seed=1
+    )
+    hmm = PocHMM()
+    # Force no anchor sites by making all genotypes heterozygous (geno==1 never triggers)
+    het_geno = np.ones(baf.size, dtype=np.int32)
+    freqs = hmm.infer_missing_af(baf, het_geno, panel, data_disomy["pos"])
+    expected = panel.mean(axis=0)
+    assert freqs.shape == baf.shape
+    assert np.allclose(freqs, expected)
+
+
+def test_genotype_parent():
+    """genotype_parent returns a (3, m) log-posterior matrix that sums to 1 per site."""
+    baf = data_disomy["baf"]
+    lrr = data_disomy["lrr"]
+    sigmas = data_disomy["sigmas"]
+    hmm = PocHMM()
+    gammas, _, _ = hmm.forward_backward(
+        bafs=baf,
+        lrrs=lrr,
+        sigmas=sigmas,
+        pos=data_disomy["pos"],
+        haps=data_disomy["mat_haps"],
+        pi0=0.7,
+        std_dev=0.1,
+    )
+    geno_dosage = hmm.genotype_parent(
+        bafs=baf,
+        lrrs=lrr,
+        sigmas=sigmas,
+        haps=data_disomy["mat_haps"],
+        gammas=gammas,
+        pi0=0.7,
+        std_dev=0.1,
+    )
+    assert geno_dosage.shape == (3, baf.size)
+    col_sums = np.exp(geno_dosage).sum(axis=0)
+    assert np.allclose(col_sums, 1.0, atol=1e-4)
+    assert np.all((np.exp(geno_dosage) >= 0.0) & (np.exp(geno_dosage) <= 1.0 + 1e-10))
