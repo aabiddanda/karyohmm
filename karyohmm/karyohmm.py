@@ -1861,7 +1861,9 @@ class PocHMM(MetaHMM):
         global_freq = hap_matrix.mean(axis=0)
 
         # Identify anchor sites of opposite homozygosity
-        anchor_mask = ((geno == 0) & (bafs >= eps)) | ((geno == 2) & (bafs <= 1.0 - eps))
+        anchor_mask = ((geno == 0) & (bafs >= eps)) | (
+            (geno == 2) & (bafs <= 1.0 - eps)
+        )
         anchor_indices = np.where(anchor_mask)[0]
 
         if len(anchor_indices) == 0:
