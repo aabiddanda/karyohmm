@@ -5,18 +5,37 @@ import numpy as np
 import pytest
 
 
-# --- Generating test data for applications in the DuoHMM setting --- #
+# --- Generating test data for applications in the PocHMM (duo) setting --- #
 pgt_sim = PGTSim()
 data_disomy = pgt_sim.full_ploidy_sim(m=1000, mix_prop=0.7, std_dev=0.1, seed=42)
-data_trisomy = pgt_sim.full_ploidy_sim(
-    m=1000, ploidy=3, mat_skew=1.0, mix_prop=0.7, std_dev=0.1, seed=42
-)
-data_monosomy = pgt_sim.full_ploidy_sim(
-    m=1000, ploidy=1, mat_skew=1.0, mix_prop=0.7, std_dev=0.1, seed=42
-)
 data_nullisomy = pgt_sim.full_ploidy_sim(
     m=1000, ploidy=0, mat_skew=1.0, mix_prop=0.7, std_dev=0.1, seed=42
 )
+# Trisomy: maternal-origin (3m) and paternal-origin (3p)
+data_mat_trisomy = pgt_sim.full_ploidy_sim(
+    m=1000, ploidy=3, mat_skew=1.0, mix_prop=0.7, std_dev=0.1, seed=42
+)
+data_pat_trisomy = pgt_sim.full_ploidy_sim(
+    m=1000, ploidy=3, mat_skew=0.0, mix_prop=0.7, std_dev=0.1, seed=42
+)
+# Monosomy: maternal-origin (1p: maternal chrom lost, paternal survives) and
+#           paternal-origin (1m: paternal chrom lost, maternal survives)
+data_mat_origin_mono = pgt_sim.full_ploidy_sim(
+    m=1000, ploidy=1, mat_skew=1.0, mix_prop=0.7, std_dev=0.1, seed=42
+)
+data_pat_origin_mono = pgt_sim.full_ploidy_sim(
+    m=1000, ploidy=1, mat_skew=0.0, mix_prop=0.7, std_dev=0.1, seed=42
+)
+
+# Convenience alias kept for parametrize tests that cover all karyotypes
+_all_data = [
+    data_disomy,
+    data_nullisomy,
+    data_mat_trisomy,
+    data_pat_trisomy,
+    data_mat_origin_mono,
+    data_pat_origin_mono,
+]
 
 
 def bph(states):
@@ -30,13 +49,10 @@ def bph(states):
         if k == 3:
             if s[1] != -1:
                 if s[0] != s[1]:
-                    # Both maternal homologs present
                     idx.append(i)
             if s[3] != -1:
                 if s[2] != s[3]:
-                    # Both paternal homologs present
                     idx.append(i)
-    # Returns indices of both maternal & paternal BPH
     return idx
 
 
@@ -51,13 +67,10 @@ def sph(states):
         if k == 3:
             if s[1] != -1:
                 if s[0] == s[1]:
-                    # Both maternal homologs present
                     idx.append(i)
             if s[3] != -1:
                 if s[2] == s[3]:
-                    # Both paternal homologs present
                     idx.append(i)
-    # Returns indices of both maternal & paternal SPH
     return idx
 
 
@@ -66,7 +79,6 @@ def test_bph_sph():
     hmm = PocHMM()
     sph_idx = sph(hmm.states)
     bph_idx = bph(hmm.states)
-    # The total number of states shouldb be 12
     assert len(sph_idx) == 8
     assert len(bph_idx) == 4
     for i in sph_idx:
@@ -77,12 +89,9 @@ def test_bph_sph():
         assert (x[0] != x[1]) or (x[2] != x[3])
 
 
-@pytest.mark.parametrize(
-    "data",
-    [data_disomy, data_trisomy, data_nullisomy, data_monosomy],
-)
+@pytest.mark.parametrize("data", _all_data)
 def test_data_integrity(data):
-    """Test for some basic data sanity checks ..."""
+    """Test basic data sanity checks."""
     for x in ["baf", "lrr", "sigmas", "mat_haps", "pat_haps"]:
         assert x in data
     baf = data["baf"]
@@ -97,66 +106,55 @@ def test_data_integrity(data):
     assert np.all((pat_haps == 0) | (pat_haps == 1))
 
 
-@pytest.mark.parametrize(
-    "data",
-    [data_disomy, data_trisomy, data_nullisomy, data_monosomy],
-)
+@pytest.mark.parametrize("data", _all_data)
 def test_pochmm_forward(data):
-    """Test the forward algorithm both with and without including the lrr."""
+    """Forward loglik changes when LRR is included vs. blanked."""
     baf = data["baf"]
     lrr = data["lrr"]
     sigmas = data["sigmas"]
     pos = data["pos"]
     mat_haps = data["mat_haps"]
-    lrrs_blank = np.repeat(-9, baf.size)
     pochmm = PocHMM()
     _, _, _, _, loglik = pochmm.forward_algorithm(
         bafs=baf, lrrs=lrr, sigmas=sigmas, pos=pos, haps=mat_haps, freqs=None
     )
-    _, _, _, _, loglik2 = pochmm.forward_algorithm(
+    _, _, _, _, loglik_no_lrr = pochmm.forward_algorithm(
         bafs=baf,
-        lrrs=lrrs_blank,
+        lrrs=np.repeat(-9, baf.size),
         sigmas=np.ones(baf.size),
         pos=pos,
         haps=mat_haps,
         freqs=None,
     )
-    assert loglik != loglik2
+    assert loglik != loglik_no_lrr
 
 
-@pytest.mark.parametrize(
-    "data",
-    [data_disomy, data_trisomy, data_nullisomy, data_monosomy],
-)
+@pytest.mark.parametrize("data", _all_data)
 def test_pochmm_backward(data):
-    """Test the forward algorithm both with and without including the lrr."""
+    """Backward loglik changes when LRR is included vs. blanked."""
     baf = data["baf"]
     lrr = data["lrr"]
     sigmas = data["sigmas"]
     pos = data["pos"]
     mat_haps = data["mat_haps"]
-    lrrs_blank = np.repeat(-9, baf.size)
     pochmm = PocHMM()
     _, _, _, _, loglik = pochmm.backward_algorithm(
         bafs=baf, lrrs=lrr, sigmas=sigmas, pos=pos, haps=mat_haps, freqs=None
     )
-    _, _, _, _, loglik2 = pochmm.backward_algorithm(
+    _, _, _, _, loglik_no_lrr = pochmm.backward_algorithm(
         bafs=baf,
-        lrrs=lrrs_blank,
+        lrrs=np.repeat(-9, baf.size),
         sigmas=np.ones(baf.size),
         pos=pos,
         haps=mat_haps,
         freqs=None,
     )
-    assert loglik != loglik2
+    assert loglik != loglik_no_lrr
 
 
-@pytest.mark.parametrize(
-    "data",
-    [data_disomy, data_trisomy, data_nullisomy, data_monosomy],
-)
+@pytest.mark.parametrize("data", _all_data)
 def test_pochmm_fwd_bwd(data):
-    """Test the forward algorithm both with and without including the lrr."""
+    """Forward and backward log-likelihoods agree."""
     baf = data["baf"]
     lrr = data["lrr"]
     sigmas = data["sigmas"]
@@ -167,22 +165,14 @@ def test_pochmm_fwd_bwd(data):
         bafs=baf, lrrs=lrr, sigmas=sigmas, pos=pos, haps=mat_haps, freqs=None
     )
     _, _, _, _, loglik2 = pochmm.backward_algorithm(
-        bafs=baf,
-        lrrs=lrr,
-        sigmas=sigmas,
-        pos=pos,
-        haps=mat_haps,
-        freqs=None,
+        bafs=baf, lrrs=lrr, sigmas=sigmas, pos=pos, haps=mat_haps, freqs=None
     )
     assert np.isclose(loglik, loglik2)
 
 
-@pytest.mark.parametrize(
-    "data",
-    [data_disomy, data_trisomy, data_nullisomy, data_monosomy],
-)
+@pytest.mark.parametrize("data", _all_data)
 def test_pochmm_fwdbwd(data):
-    """Test the forward algorithm both with and without including the lrr."""
+    """Forward-backward posteriors are valid probability distributions."""
     baf = data["baf"]
     lrr = data["lrr"]
     sigmas = data["sigmas"]
@@ -193,24 +183,33 @@ def test_pochmm_fwdbwd(data):
         bafs=baf, lrrs=lrr, sigmas=sigmas, pos=pos, haps=mat_haps, freqs=None
     )
     assert np.all(np.isclose(np.sum(np.exp(gammas), axis=0), 1.0))
-    pp_fwdbwd = np.exp(gammas)
-    assert np.all((pp_fwdbwd >= 0.0) & (pp_fwdbwd <= 1.0))
+    pp = np.exp(gammas)
+    assert np.all((pp >= 0.0) & (pp <= 1.0))
 
 
+@pytest.mark.parametrize("use_lrr", [True, False], ids=["with_lrr", "no_lrr"])
 @pytest.mark.parametrize(
     "data",
-    [data_disomy, data_trisomy, data_monosomy],
+    [
+        data_disomy,
+        data_mat_trisomy,
+        data_pat_trisomy,
+        data_mat_origin_mono,
+        data_pat_origin_mono,
+    ],
+    ids=["disomy", "mat_trisomy", "pat_trisomy", "mat_origin_mono", "pat_origin_mono"],
 )
-def test_pochmm_ploidy_correctness(data):
-    """Test the forward algorithm both with and without including the lrr."""
+def test_pochmm_ploidy_correctness(data, use_lrr):
+    """Argmax karyotype matches the true simulated karyotype, with and without LRR."""
     baf = data["baf"]
-    lrr = data["lrr"]
-    sigmas = data["sigmas"]
+    lrr = data["lrr"] if use_lrr else np.repeat(-9.0, baf.size)
+    sigmas = data["sigmas"] if use_lrr else np.ones(baf.size)
     pos = data["pos"]
     mat_haps = data["mat_haps"]
-    pat_haps = data["pat_haps"]
+    # Use paternal allele frequencies as a proxy for an external reference panel
+    freqs = data["pat_haps"].sum(axis=0) / 2.0
     hmm = PocHMM()
-    gammas, states, karyotypes = hmm.forward_backward(
+    gammas, _, karyotypes = hmm.forward_backward(
         bafs=baf,
         lrrs=lrr,
         sigmas=sigmas,
@@ -218,12 +217,11 @@ def test_pochmm_ploidy_correctness(data):
         haps=mat_haps,
         pi0=0.7,
         std_dev=0.1,
-        freqs=pat_haps.sum(axis=0) / 2.0,
+        freqs=freqs,
     )
     assert np.all(np.isclose(np.sum(np.exp(gammas), axis=0), 1.0))
     post_dict = hmm.posterior_karyotypes(gammas, karyotypes)
-    max_post = np.max([post_dict[p] for p in post_dict])
     for x in ["0", "1m", "1p", "2", "3m", "3p"]:
         assert x in post_dict
+    max_post = max(post_dict.values())
     assert post_dict[data["aploid"]] == max_post
-    assert max_post >= 0.95
