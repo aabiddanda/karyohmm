@@ -28,9 +28,12 @@ from karyohmm_utils import (
     forward_algo,
     forward_algo_duo,
     forward_algo_sibs,
+    forward_mcc_phased_poc,
+    forward_mcc_phased_trio,
     logaddexp,
     logsumexp,
     loglik_mcc,
+    loglik_mcc_phased,
     mat_dosage,
     norm_logl,
     pat_dosage,
@@ -1981,6 +1984,210 @@ class MccEst:
                     pat_haps=pat_haps,
                     c=x,
                     std_dev=std_dev,
+                )
+            )
+        )
+        qval = chi2.ppf(alpha, df=df)
+        try:
+            lower_CI = brentq(lambda x: wilks(x) - qval, 1e-4, c_hat)
+        except ValueError:
+            lower_CI = 0.0
+        try:
+            upper_CI = brentq(lambda x: wilks(x) - qval, c_hat, 0.5)
+        except ValueError:
+            upper_CI = 0.5
+        return (lower_CI, c_hat, upper_CI)
+
+    def loglik_mcc_phased_trio(
+        self, bafs, mat_haps, pat_haps, pos, c=0.0, std_dev=0.1, r=1e-8
+    ):
+        """Log-likelihood of MCC using the phase-aware HMM for trio samples.
+
+        Hidden state H_i tracks which maternal haplotype was transmitted to the
+        POC. Transitions between states follow the same exponential recombination
+        kernel used in MetaHMM/PocHMM: rho = 1 - exp(-r * d).
+        """
+        assert bafs.ndim == 1
+        assert mat_haps.ndim == 2 and mat_haps.shape == (2, bafs.size)
+        assert pat_haps.ndim == 2 and pat_haps.shape == (2, bafs.size)
+        assert pos.ndim == 1 and pos.size == bafs.size
+        assert np.all(pos[1:] > pos[:-1]), "pos must be strictly increasing"
+        assert np.all((bafs >= 0) & (bafs <= 1))
+        assert (c >= 0) and (c <= 0.5)
+        assert std_dev > 0
+        assert r > 0
+        return forward_mcc_phased_trio(
+            bafs.astype(np.float64),
+            mat_haps.astype(np.int32),
+            pat_haps.astype(np.int32),
+            pos.astype(np.float64),
+            c=c,
+            std_dev=std_dev,
+            r=r,
+        )
+
+    def loglik_mcc_phased_poc(
+        self, bafs, mat_haps, freqs, pos, c=0.0, std_dev=0.1, r=1e-8
+    ):
+        """Log-likelihood of MCC using the phase-aware HMM for POC/duo samples.
+
+        Same as loglik_mcc_phased_trio but marginalises over the unobserved
+        paternal genotype at each site using Hardy-Weinberg weights from freqs.
+        """
+        assert bafs.ndim == 1
+        assert mat_haps.ndim == 2 and mat_haps.shape == (2, bafs.size)
+        assert freqs.ndim == 1 and freqs.size == bafs.size
+        assert pos.ndim == 1 and pos.size == bafs.size
+        assert np.all(pos[1:] > pos[:-1]), "pos must be strictly increasing"
+        assert np.all((bafs >= 0) & (bafs <= 1))
+        assert np.all((freqs >= 0) & (freqs <= 1))
+        assert (c >= 0) and (c <= 0.5)
+        assert std_dev > 0
+        assert r > 0
+        return forward_mcc_phased_poc(
+            bafs.astype(np.float64),
+            mat_haps.astype(np.int32),
+            freqs.astype(np.float64),
+            pos.astype(np.float64),
+            c=c,
+            std_dev=std_dev,
+            r=r,
+        )
+
+    def est_mcc_phased_trio(
+        self, bafs, mat_haps, pat_haps, pos, r=1e-8, algo="Nelder-Mead", **kwargs
+    ):
+        """Estimate MCC via MLE using the phase-aware HMM for trio samples."""
+        opt_res = minimize(
+            lambda x: (
+                -self.loglik_mcc_phased_trio(
+                    bafs=bafs,
+                    mat_haps=mat_haps,
+                    pat_haps=pat_haps,
+                    pos=pos,
+                    c=x[0],
+                    std_dev=x[1],
+                    r=r,
+                )
+            ),
+            x0=[0.05, 0.1],
+            method=algo,
+            bounds=[(0, 0.5), (1e-3, 0.3)],
+            **kwargs,
+        )
+        return opt_res.x[0], opt_res.x[1]
+
+    def est_mcc_phased_poc(
+        self, bafs, mat_haps, freqs, pos, r=1e-8, algo="Nelder-Mead", **kwargs
+    ):
+        """Estimate MCC via MLE using the phase-aware HMM for POC/duo samples."""
+        opt_res = minimize(
+            lambda x: (
+                -self.loglik_mcc_phased_poc(
+                    bafs=bafs,
+                    mat_haps=mat_haps,
+                    freqs=freqs,
+                    pos=pos,
+                    c=x[0],
+                    std_dev=x[1],
+                    r=r,
+                )
+            ),
+            x0=[0.05, 0.1],
+            method=algo,
+            bounds=[(0, 0.5), (1e-3, 0.3)],
+            **kwargs,
+        )
+        return opt_res.x[0], opt_res.x[1]
+
+    def mcc_ci_phased_trio(
+        self,
+        bafs,
+        mat_haps,
+        pat_haps,
+        pos,
+        c_hat=0.0,
+        std_dev=0.1,
+        r=1e-8,
+        alpha=0.95,
+        df=1,
+    ):
+        """Profile-likelihood confidence interval for MCC using the phase-aware trio HMM."""
+        assert (c_hat >= 0) and (c_hat <= 0.5)
+        assert std_dev > 0
+        assert (alpha > 0) and (alpha < 1)
+        ll_hat = self.loglik_mcc_phased_trio(
+            bafs=bafs,
+            mat_haps=mat_haps,
+            pat_haps=pat_haps,
+            pos=pos,
+            c=c_hat,
+            std_dev=std_dev,
+            r=r,
+        )
+        wilks = lambda x: (
+            2
+            * (
+                ll_hat
+                - self.loglik_mcc_phased_trio(
+                    bafs=bafs,
+                    mat_haps=mat_haps,
+                    pat_haps=pat_haps,
+                    pos=pos,
+                    c=x,
+                    std_dev=std_dev,
+                    r=r,
+                )
+            )
+        )
+        qval = chi2.ppf(alpha, df=df)
+        try:
+            lower_CI = brentq(lambda x: wilks(x) - qval, 1e-4, c_hat)
+        except ValueError:
+            lower_CI = 0.0
+        try:
+            upper_CI = brentq(lambda x: wilks(x) - qval, c_hat, 0.5)
+        except ValueError:
+            upper_CI = 0.5
+        return (lower_CI, c_hat, upper_CI)
+
+    def mcc_ci_phased_poc(
+        self,
+        bafs,
+        mat_haps,
+        freqs,
+        pos,
+        c_hat=0.0,
+        std_dev=0.1,
+        r=1e-8,
+        alpha=0.95,
+        df=1,
+    ):
+        """Profile-likelihood confidence interval for MCC using the phase-aware POC HMM."""
+        assert (c_hat >= 0) and (c_hat <= 0.5)
+        assert std_dev > 0
+        assert (alpha > 0) and (alpha < 1)
+        ll_hat = self.loglik_mcc_phased_poc(
+            bafs=bafs,
+            mat_haps=mat_haps,
+            freqs=freqs,
+            pos=pos,
+            c=c_hat,
+            std_dev=std_dev,
+            r=r,
+        )
+        wilks = lambda x: (
+            2
+            * (
+                ll_hat
+                - self.loglik_mcc_phased_poc(
+                    bafs=bafs,
+                    mat_haps=mat_haps,
+                    freqs=freqs,
+                    pos=pos,
+                    c=x,
+                    std_dev=std_dev,
+                    r=r,
                 )
             )
         )
