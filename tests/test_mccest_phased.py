@@ -65,7 +65,9 @@ def _make_ld_block_data(n=4000, c_true=0.08, std_dev=0.12, block_len=400, seed=1
     return bafs, mat_haps, pat_haps, freqs, pos, c_true
 
 
-def _make_ld_block_poc_data(n=4000, c_true=0.08, std_dev=0.12, block_len=400, freq=0.05, seed=11):
+def _make_ld_block_poc_data(
+    n=4000, c_true=0.08, std_dev=0.12, block_len=400, freq=0.05, seed=11
+):
     """Synthetic POC data drawn from the phase-aware emission model under HWE.
 
     Uses a low paternal allele frequency (default 0.05) so the HWE distribution
@@ -84,7 +86,7 @@ def _make_ld_block_poc_data(n=4000, c_true=0.08, std_dev=0.12, block_len=400, fr
     pos = np.linspace(1, 150_000_000, n)
     freqs = np.full(n, freq)
     m_h = mat_haps[0, :]
-    p0, p1, p2 = (1 - freq) ** 2, 2 * freq * (1 - freq), freq ** 2
+    p0, p1, p2 = (1 - freq) ** 2, 2 * freq * (1 - freq), freq**2
     pg = rng.choice([0, 1, 2], size=n, p=[p0, p1, p2])
     mus = np.zeros(n)
     for i in range(n):
@@ -137,7 +139,9 @@ def test_loglik_phased_trio_all_hom_matches_unphased():
     pat_haps = np.array([[1, 0, 1, 0], [1, 0, 1, 0]], dtype=np.int32)
     bafs = np.array([0.5, 0.1, 0.9, 0.5])
     pos = np.array([1000.0, 2000.0, 3000.0, 4000.0])
-    ll_phased = mcc.loglik_mcc_phased_trio(bafs, mat_haps, pat_haps, pos, c=0.1, std_dev=0.1)
+    ll_phased = mcc.loglik_mcc_phased_trio(
+        bafs, mat_haps, pat_haps, pos, c=0.1, std_dev=0.1
+    )
     ll_unphased = mcc.loglik_mcc_trio(bafs, mat_haps, pat_haps, c=0.1, std_dev=0.1)
     assert np.isclose(ll_phased, ll_unphased, atol=1e-5)
 
@@ -369,8 +373,10 @@ def test_loglik_phased_trio_nondefault_r():
     """loglik_mcc_phased_trio changes with the recombination rate parameter r."""
     mcc = MccEst()
     bafs, mat_haps, pat_haps, _, pos, _ = _make_ld_block_data()
-    ll_low_r  = mcc.loglik_mcc_phased_trio(bafs, mat_haps, pat_haps, pos, c=0.05, r=1e-9)
-    ll_high_r = mcc.loglik_mcc_phased_trio(bafs, mat_haps, pat_haps, pos, c=0.05, r=1e-6)
+    ll_low_r = mcc.loglik_mcc_phased_trio(bafs, mat_haps, pat_haps, pos, c=0.05, r=1e-9)
+    ll_high_r = mcc.loglik_mcc_phased_trio(
+        bafs, mat_haps, pat_haps, pos, c=0.05, r=1e-6
+    )
     assert ll_low_r != ll_high_r
 
 
@@ -378,7 +384,7 @@ def test_loglik_phased_poc_nondefault_r():
     """loglik_mcc_phased_poc changes with the recombination rate parameter r."""
     mcc = MccEst()
     bafs, mat_haps, freqs, pos, _ = _make_ld_block_poc_data()
-    ll_low_r  = mcc.loglik_mcc_phased_poc(bafs, mat_haps, freqs, pos, c=0.05, r=1e-9)
+    ll_low_r = mcc.loglik_mcc_phased_poc(bafs, mat_haps, freqs, pos, c=0.05, r=1e-9)
     ll_high_r = mcc.loglik_mcc_phased_poc(bafs, mat_haps, freqs, pos, c=0.05, r=1e-6)
     assert ll_low_r != ll_high_r
 
@@ -444,3 +450,130 @@ def test_loglik_phased_trio_unsorted_pos():
         assert False, "Expected AssertionError"
     except AssertionError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Multi-chromosome (genome-wide) phased estimation tests
+# ---------------------------------------------------------------------------
+
+_n_chroms_p = 3
+_pgt_p = PGTSim()
+_chrom_data_p = [
+    _pgt_p.full_ploidy_sim(m=600, mix_prop=0.0, std_dev=0.1, seed=300 + i)
+    for i in range(_n_chroms_p)
+]
+_baf_list_p = [d["baf"] for d in _chrom_data_p]
+_mat_haps_list_p = [d["mat_haps"] for d in _chrom_data_p]
+_pat_haps_list_p = [d["pat_haps"] for d in _chrom_data_p]
+_freqs_list_p = [d["af"] for d in _chrom_data_p]
+
+_rng_pos_p = np.random.default_rng(77)
+_pos_list_p = [
+    np.sort(
+        _rng_pos_p.integers(1, 50_000_000, _chrom_data_p[i]["baf"].size).astype(float)
+    )
+    for i in range(_n_chroms_p)
+]
+
+_c_true_genome_p = 0.1
+_cc_baf_list_p = [
+    _pgt_p.sim_cell_contamination(
+        baf=_chrom_data_p[i]["baf"],
+        haps=_chrom_data_p[i]["mat_haps"],
+        fraction=_c_true_genome_p,
+        seed=400 + i,
+    )
+    for i in range(_n_chroms_p)
+]
+
+
+def test_loglik_genome_phased_poc_finite():
+    """loglik_mcc_genome_phased_poc returns a finite scalar."""
+    mcc = MccEst()
+    ll = mcc.loglik_mcc_genome_phased_poc(
+        _baf_list_p, _mat_haps_list_p, _freqs_list_p, _pos_list_p, c=0.1, std_dev=0.1
+    )
+    assert np.isfinite(ll)
+
+
+def test_loglik_genome_phased_trio_finite():
+    """loglik_mcc_genome_phased_trio returns a finite scalar."""
+    mcc = MccEst()
+    ll = mcc.loglik_mcc_genome_phased_trio(
+        _baf_list_p, _mat_haps_list_p, _pat_haps_list_p, _pos_list_p, c=0.1, std_dev=0.1
+    )
+    assert np.isfinite(ll)
+
+
+def test_loglik_genome_phased_poc_equals_sum():
+    """loglik_mcc_genome_phased_poc equals the sum of per-chromosome phased POC logliks."""
+    mcc = MccEst()
+    c, std_dev = 0.08, 0.12
+    ll_genome = mcc.loglik_mcc_genome_phased_poc(
+        _baf_list_p, _mat_haps_list_p, _freqs_list_p, _pos_list_p, c=c, std_dev=std_dev
+    )
+    ll_sum = sum(
+        mcc.loglik_mcc_phased_poc(b, m, f, pos, c=c, std_dev=std_dev)
+        for b, m, f, pos in zip(_baf_list_p, _mat_haps_list_p, _freqs_list_p, _pos_list_p)
+    )
+    assert np.isclose(ll_genome, ll_sum)
+
+
+def test_loglik_genome_phased_trio_equals_sum():
+    """loglik_mcc_genome_phased_trio equals the sum of per-chromosome phased trio logliks."""
+    mcc = MccEst()
+    c, std_dev = 0.08, 0.12
+    ll_genome = mcc.loglik_mcc_genome_phased_trio(
+        _baf_list_p, _mat_haps_list_p, _pat_haps_list_p, _pos_list_p, c=c, std_dev=std_dev
+    )
+    ll_sum = sum(
+        mcc.loglik_mcc_phased_trio(b, m, p, pos, c=c, std_dev=std_dev)
+        for b, m, p, pos in zip(
+            _baf_list_p, _mat_haps_list_p, _pat_haps_list_p, _pos_list_p
+        )
+    )
+    assert np.isclose(ll_genome, ll_sum)
+
+
+def test_est_mcc_genome_phased_poc_bounds():
+    """est_mcc_genome_phased_poc returns c in [0, 0.5] and sigma > 0."""
+    mcc = MccEst()
+    c_est, s_est = mcc.est_mcc_genome_phased_poc(
+        _cc_baf_list_p, _mat_haps_list_p, _freqs_list_p, _pos_list_p
+    )
+    assert 0.0 <= c_est <= 0.5
+    assert s_est > 0.0
+
+
+def test_est_mcc_genome_phased_trio_bounds():
+    """est_mcc_genome_phased_trio returns c in [0, 0.5] and sigma > 0."""
+    mcc = MccEst()
+    c_est, s_est = mcc.est_mcc_genome_phased_trio(
+        _cc_baf_list_p, _mat_haps_list_p, _pat_haps_list_p, _pos_list_p
+    )
+    assert 0.0 <= c_est <= 0.5
+    assert s_est > 0.0
+
+
+def test_est_mcc_per_chrom_phased_poc_length_and_bounds():
+    """est_mcc_per_chrom_phased_poc returns one valid (c, sigma) per chromosome."""
+    mcc = MccEst()
+    results = mcc.est_mcc_per_chrom_phased_poc(
+        _cc_baf_list_p, _mat_haps_list_p, _freqs_list_p, _pos_list_p
+    )
+    assert len(results) == _n_chroms_p
+    for c_est, s_est in results:
+        assert 0.0 <= c_est <= 0.5
+        assert s_est > 0.0
+
+
+def test_est_mcc_per_chrom_phased_trio_length_and_bounds():
+    """est_mcc_per_chrom_phased_trio returns one valid (c, sigma) per chromosome."""
+    mcc = MccEst()
+    results = mcc.est_mcc_per_chrom_phased_trio(
+        _cc_baf_list_p, _mat_haps_list_p, _pat_haps_list_p, _pos_list_p
+    )
+    assert len(results) == _n_chroms_p
+    for c_est, s_est in results:
+        assert 0.0 <= c_est <= 0.5
+        assert s_est > 0.0

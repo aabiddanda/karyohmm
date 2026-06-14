@@ -252,6 +252,111 @@ def test_loglik_poc_invalid_freq():
         pass
 
 
+# ---------------------------------------------------------------------------
+# Multi-chromosome (genome-wide) estimation tests
+# ---------------------------------------------------------------------------
+
+_n_chroms = 3
+_pgt_genome = PGTSim()
+_chrom_data = [
+    _pgt_genome.full_ploidy_sim(m=500, mix_prop=0.0, std_dev=0.1, seed=100 + i)
+    for i in range(_n_chroms)
+]
+_baf_list = [d["baf"] for d in _chrom_data]
+_mat_haps_list = [d["mat_haps"] for d in _chrom_data]
+_pat_haps_list = [d["pat_haps"] for d in _chrom_data]
+_freqs_list = [d["af"] for d in _chrom_data]
+
+_c_true_genome = 0.1
+_cc_baf_list = [
+    _pgt_genome.sim_cell_contamination(
+        baf=_chrom_data[i]["baf"],
+        haps=_chrom_data[i]["mat_haps"],
+        fraction=_c_true_genome,
+        seed=200 + i,
+    )
+    for i in range(_n_chroms)
+]
+
+
+def test_loglik_genome_poc_finite():
+    """loglik_mcc_genome_poc returns a finite scalar."""
+    mcc = MccEst()
+    ll = mcc.loglik_mcc_genome_poc(_baf_list, _mat_haps_list, _freqs_list, c=0.1, std_dev=0.1)
+    assert np.isfinite(ll)
+
+
+def test_loglik_genome_trio_finite():
+    """loglik_mcc_genome_trio returns a finite scalar."""
+    mcc = MccEst()
+    ll = mcc.loglik_mcc_genome_trio(
+        _baf_list, _mat_haps_list, _pat_haps_list, c=0.1, std_dev=0.1
+    )
+    assert np.isfinite(ll)
+
+
+def test_loglik_genome_poc_equals_sum():
+    """loglik_mcc_genome_poc equals the sum of per-chromosome POC logliks."""
+    mcc = MccEst()
+    c, std_dev = 0.08, 0.12
+    ll_genome = mcc.loglik_mcc_genome_poc(_baf_list, _mat_haps_list, _freqs_list, c=c, std_dev=std_dev)
+    ll_sum = sum(
+        mcc.loglik_mcc_poc(b, m, f, c=c, std_dev=std_dev)
+        for b, m, f in zip(_baf_list, _mat_haps_list, _freqs_list)
+    )
+    assert np.isclose(ll_genome, ll_sum)
+
+
+def test_loglik_genome_trio_equals_sum():
+    """loglik_mcc_genome_trio equals the sum of per-chromosome trio logliks."""
+    mcc = MccEst()
+    c, std_dev = 0.08, 0.12
+    ll_genome = mcc.loglik_mcc_genome_trio(
+        _baf_list, _mat_haps_list, _pat_haps_list, c=c, std_dev=std_dev
+    )
+    ll_sum = sum(
+        mcc.loglik_mcc_trio(b, m, p, c=c, std_dev=std_dev)
+        for b, m, p in zip(_baf_list, _mat_haps_list, _pat_haps_list)
+    )
+    assert np.isclose(ll_genome, ll_sum)
+
+
+def test_est_mcc_genome_poc_bounds():
+    """est_mcc_genome_poc returns c in [0, 0.5] and sigma > 0."""
+    mcc = MccEst()
+    c_est, s_est = mcc.est_mcc_genome_poc(_cc_baf_list, _mat_haps_list, _freqs_list)
+    assert 0.0 <= c_est <= 0.5
+    assert s_est > 0.0
+
+
+def test_est_mcc_genome_trio_bounds():
+    """est_mcc_genome_trio returns c in [0, 0.5] and sigma > 0."""
+    mcc = MccEst()
+    c_est, s_est = mcc.est_mcc_genome_trio(_cc_baf_list, _mat_haps_list, _pat_haps_list)
+    assert 0.0 <= c_est <= 0.5
+    assert s_est > 0.0
+
+
+def test_est_mcc_per_chrom_poc_length_and_bounds():
+    """est_mcc_per_chrom_poc returns one valid (c, sigma) per chromosome."""
+    mcc = MccEst()
+    results = mcc.est_mcc_per_chrom_poc(_cc_baf_list, _mat_haps_list, _freqs_list)
+    assert len(results) == _n_chroms
+    for c_est, s_est in results:
+        assert 0.0 <= c_est <= 0.5
+        assert s_est > 0.0
+
+
+def test_est_mcc_per_chrom_trio_length_and_bounds():
+    """est_mcc_per_chrom_trio returns one valid (c, sigma) per chromosome."""
+    mcc = MccEst()
+    results = mcc.est_mcc_per_chrom_trio(_cc_baf_list, _mat_haps_list, _pat_haps_list)
+    assert len(results) == _n_chroms
+    for c_est, s_est in results:
+        assert 0.0 <= c_est <= 0.5
+        assert s_est > 0.0
+
+
 def test_realistic_ci_trio(m=10000, n=5, c=0.1):
     """Simulate n realistic chromosomes with a high-degree of contamination."""
     pgt_sim = PGTSim()
