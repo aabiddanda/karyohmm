@@ -2575,6 +2575,11 @@ class MccEst:
         the genome-wide log-likelihood is the sum of per-chromosome likelihoods from
         :meth:`loglik_mcc_poc`.  Sex chromosomes should be excluded before calling.
 
+        Implemented by concatenating all chromosome arrays into a single call to
+        :meth:`loglik_mcc_poc`, which is equivalent to summing independent
+        per-chromosome log-likelihoods but avoids repeated Python function-call
+        overhead and assertion checks during optimisation.
+
         Arguments:
             - baf_list (`list` of `np.array`): per-chromosome BAF arrays
             - mat_haps_list (`list` of `np.array`): per-chromosome 2 x m maternal haplotype arrays
@@ -2586,13 +2591,20 @@ class MccEst:
             - loglik (`float`): total log-likelihood summed across all chromosomes
 
         """
-        return sum(
-            self.loglik_mcc_poc(b, m, f, c=c, std_dev=std_dev)
-            for b, m, f in zip(baf_list, mat_haps_list, freqs_list)
+        return self.loglik_mcc_poc(
+            np.concatenate(baf_list),
+            np.concatenate(mat_haps_list, axis=1),
+            np.concatenate(freqs_list),
+            c=c,
+            std_dev=std_dev,
         )
 
     def loglik_mcc_genome_trio(self, baf_list, mat_haps_list, pat_haps_list, c=0.0, std_dev=0.1):
         """Genome-wide log-likelihood of MCC summed across all chromosomes (trio model).
+
+        Implemented by concatenating all chromosome arrays into a single call to
+        :meth:`loglik_mcc_trio` (valid because sites are independent across
+        chromosomes in the unphased model).
 
         Arguments:
             - baf_list (`list` of `np.array`): per-chromosome BAF arrays
@@ -2605,9 +2617,12 @@ class MccEst:
             - loglik (`float`): total log-likelihood summed across all chromosomes
 
         """
-        return sum(
-            self.loglik_mcc_trio(b, m, p, c=c, std_dev=std_dev)
-            for b, m, p in zip(baf_list, mat_haps_list, pat_haps_list)
+        return self.loglik_mcc_trio(
+            np.concatenate(baf_list),
+            np.concatenate(mat_haps_list, axis=1),
+            np.concatenate(pat_haps_list, axis=1),
+            c=c,
+            std_dev=std_dev,
         )
 
     def loglik_mcc_genome_phased_poc(
