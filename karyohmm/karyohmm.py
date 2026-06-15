@@ -3008,17 +3008,29 @@ class MccEst:
 class MosaicEst:
     """Estimator of mosaic copy-number cell fraction using a joint BAF + LRR HMM.
 
-    A 3-state HMM over all m genomic sites estimates the mosaic cell fraction
-    ``cf`` directly.  States and their emission means are:
+    A 5-state HMM over all m genomic sites estimates the mosaic cell fraction
+    ``cf`` and identifies the parental origin of the event.  The five states
+    and their emission means are:
 
-    - State 0 (loss):    LRR = log₂(1 − cf/2),  phased BAF shift = −cf/2
-    - State 1 (neutral): LRR = 0,                phased BAF shift = 0
-    - State 2 (gain):    LRR = log₂(1 + cf/2),  phased BAF shift = +cf/6
+    - State 0 (neutral):       LRR = 0,                phased BAF = 0
+    - State 1 (maternal gain): LRR = log₂(1 + cf/2),  phased BAF = +cf/6
+    - State 2 (paternal gain): LRR = log₂(1 + cf/2),  phased BAF = −cf/6
+    - State 3 (maternal loss): LRR = log₂(1 − cf/2),  phased BAF = −cf/2
+    - State 4 (paternal loss): LRR = log₂(1 − cf/2),  phased BAF = +cf/2
+
+    The BAF means follow from the discrete mosaic mixture and the phase
+    convention (sign = +1 when the maternal haplotype carries the alt allele):
+
+    - Maternal gain: extra maternal copy at a mat=alt site gives BAF 2/3, so
+      phased BAF = +cf/6; at mat=ref sites the sign corrects to the same value.
+    - Paternal gain: extra paternal copy reverses the BAF shift — phased BAF
+      = −cf/6 coherently across all het sites.
+    - Maternal loss: losing the maternal copy leaves only paternal alleles,
+      giving phased BAF = −cf/2 (3× larger than gain because BAF moves to 0 or 1).
+    - Paternal loss: symmetrically, phased BAF = +cf/2.
 
     LRR is evaluated at **every** site; phased BAF is evaluated only at
     expected-heterozygous sites (one parent hom-ref, the other hom-alt).
-    The BAF shift asymmetry reflects the discrete mixture: a gain of one
-    copy shifts the het-site BAF by cf/6, a loss shifts it by cf/2.
 
     All preprocessing (het-site identification, phase assignment, transition
     matrix construction) happens in ``__init__``, so ``est_mle_cf`` can be
@@ -3041,10 +3053,20 @@ class MosaicEst:
         m-length array of per-site LRR noise standard deviations.  Required
         when ``lrrs`` is provided.
     switch_err : float
-        Direct loss↔gain transition probability in the HMM (default 0.01).
+        Within-type origin-switch probability (maternal↔paternal for the same
+        gain or loss direction; default 0.01).
     t_rate : float
-        Neutral↔loss and neutral↔gain transition probability (default 1e-4).
+        Neutral↔aneuploid transition probability (default 1e-4).
     """
+
+    #: Ordered state labels returned by :meth:`infer_origin`.
+    STATE_NAMES = (
+        "neutral",
+        "maternal-gain",
+        "paternal-gain",
+        "maternal-loss",
+        "paternal-loss",
+    )
 
     def __init__(
         self,
@@ -3137,25 +3159,42 @@ class MosaicEst:
     # ------------------------------------------------------------------
 
     def create_transition_matrix(self, switch_err=0.01, t_rate=1e-4):
-        """Build the 3-state log-transition matrix.
+        """Build the 5-state log-transition matrix.
+
+        States: 0=neutral, 1=mat-gain, 2=pat-gain, 3=mat-loss, 4=pat-loss.
+
+        Transitions allowed:
+        - neutral → each aneuploid state with probability ``t_rate / 4``
+        - any aneuploid → neutral with probability ``t_rate``
+        - within-gain origin switch (1↔2) with probability ``switch_err``
+        - within-loss origin switch (3↔4) with probability ``switch_err``
+        - cross-type transitions (gain↔loss) are not modelled (log-prob = −∞)
 
         Arguments:
-            - switch_err (`float`): direct loss↔gain transition probability
-            - t_rate (`float`): neutral↔loss and neutral↔gain probability
+            - switch_err (`float`): maternal↔paternal origin-switch probability
+              within the same gain or loss direction
+            - t_rate (`float`): neutral↔aneuploid entry/exit probability
         """
         assert 0 < switch_err <= 0.05
         assert 0 < t_rate < 0.5
-        A = np.zeros((3, 3))
-        A[0, 2] = switch_err
-        A[2, 0] = switch_err
-        A[0, 1] = t_rate
-        A[2, 1] = t_rate
-        A[1, 0] = t_rate
-        A[1, 2] = t_rate
-        A[0, 0] = 1.0 - A[0, :].sum()
-        A[1, 1] = 1.0 - A[1, :].sum()
-        A[2, 2] = 1.0 - A[2, :].sum()
-        self.A = np.log(A)
+        n = 5
+        A = np.zeros((n, n))
+        # Neutral → each aneuploid equally
+        A[0, 1:] = t_rate / 4.0
+        # Each aneuploid → neutral
+        A[1:, 0] = t_rate
+        # Within-gain origin switch
+        A[1, 2] = switch_err
+        A[2, 1] = switch_err
+        # Within-loss origin switch
+        A[3, 4] = switch_err
+        A[4, 3] = switch_err
+        # Diagonal
+        for i in range(n):
+            A[i, i] = 1.0 - A[i, :].sum()
+        # Cross-type transitions (gain↔loss) are 0; log(0) = -inf is intentional
+        with np.errstate(divide="ignore"):
+            self.A = np.log(A)
 
     # ------------------------------------------------------------------
     # Likelihood and inference
@@ -3167,18 +3206,20 @@ class MosaicEst:
         When ``lrrs`` was provided at construction, LRR emission is added at
         every site.  Phased BAF emission is always added at expected-het sites.
 
-        State-dependent emission means (derived from discrete mosaic mixture):
+        State-dependent emission means (see class docstring for derivation):
 
-        - State 0 (loss):    LRR = log₂(1 − cf/2),  phased BAF = −cf/2
-        - State 1 (neutral): LRR = 0,                phased BAF = 0
-        - State 2 (gain):    LRR = log₂(1 + cf/2),  phased BAF = +cf/6
+        - State 0 (neutral):       LRR = 0,                phased BAF = 0
+        - State 1 (maternal gain): LRR = log₂(1 + cf/2),  phased BAF = +cf/6
+        - State 2 (paternal gain): LRR = log₂(1 + cf/2),  phased BAF = −cf/6
+        - State 3 (maternal loss): LRR = log₂(1 − cf/2),  phased BAF = −cf/2
+        - State 4 (paternal loss): LRR = log₂(1 − cf/2),  phased BAF = +cf/2
 
         Arguments:
             - cf (`float`): mosaic cell fraction in [0, 1)
             - std_dev_baf (`float`): BAF noise standard deviation at het sites
 
         Returns:
-            - alphas (`np.ndarray`): 3 × m log forward variable
+            - alphas (`np.ndarray`): 5 × m log forward variable
             - scaler (`np.ndarray`): m-length per-site log normalisation constants
             - loglik (`float`): total log-likelihood
         """
@@ -3189,22 +3230,23 @@ class MosaicEst:
 
         m = self.pos.size
         use_lrr = self.lrrs is not None and self.sigmas is not None
+        n_states = 5
 
-        lrr_means = np.array([
-            np.log2(max(1.0 - cf / 2.0, 1e-9)),
-            0.0,
-            np.log2(1.0 + cf / 2.0),
-        ])
-        baf_means = np.array([-cf / 2.0, 0.0, cf / 6.0])
+        lrr_gain = np.log2(1.0 + cf / 2.0)
+        lrr_loss = np.log2(max(1.0 - cf / 2.0, 1e-9))
+        # Per-state LRR means: [neutral, mat-gain, pat-gain, mat-loss, pat-loss]
+        lrr_means = np.array([0.0, lrr_gain, lrr_gain, lrr_loss, lrr_loss])
+        # Per-state phased-BAF means
+        baf_means = np.array([0.0, cf / 6.0, -cf / 6.0, -cf / 2.0, cf / 2.0])
 
         if use_lrr:
             lrr_logp = np.stack([
                 _norm.logpdf(self.lrrs, lrr_means[k], self.sigmas)
-                for k in range(3)
+                for k in range(n_states)
             ])
         baf_logp = np.stack([
             _norm.logpdf(self.phased_baf, baf_means[k], std_dev_baf)
-            for k in range(3)
+            for k in range(n_states)
         ])
 
         is_het = np.zeros(m, dtype=bool)
@@ -3212,8 +3254,8 @@ class MosaicEst:
         het_to_pbaf = np.full(m, -1, dtype=np.intp)
         het_to_pbaf[self.het_idx] = np.arange(self.het_idx.size)
 
-        alphas = np.zeros((3, m))
-        alphas[:, 0] = np.log(1.0 / 3.0)
+        alphas = np.zeros((n_states, m))
+        alphas[:, 0] = np.log(1.0 / n_states)
         if use_lrr:
             alphas[:, 0] += lrr_logp[:, 0]
         if is_het[0]:
@@ -3224,7 +3266,7 @@ class MosaicEst:
         alphas[:, 0] -= scaler[0]
 
         for i in range(1, m):
-            for k in range(3):
+            for k in range(n_states):
                 alphas[k, i] = logsumexp(self.A[:, k] + alphas[:, i - 1])
             if use_lrr:
                 alphas[:, i] += lrr_logp[:, i]
@@ -3307,6 +3349,36 @@ class MosaicEst:
             ll_h1 = self.forward_algo_full(cf=self.mle_cf, std_dev_baf=std_dev_baf)[2]
             return -2.0 * (ll_h0 - ll_h1)
         return np.nan
+
+    def infer_origin(self, std_dev_baf=0.1):
+        """Identify the most likely parental origin of the mosaic event.
+
+        Runs the forward algorithm at ``mle_cf`` and computes the
+        chromosome-wide log-evidence for each of the four aneuploid states
+        (marginalised over sites via logsumexp of the forward variable).  The
+        aneuploid state with the highest evidence is returned as the inferred
+        origin.
+
+        Requires :meth:`est_mle_cf` to have been called first.  Returns
+        ``'neutral'`` when ``mle_cf`` is below 0.01.
+
+        Arguments:
+            - std_dev_baf (`float`): BAF noise standard deviation
+
+        Returns:
+            - origin (`str`): one of ``MosaicEst.STATE_NAMES``
+        """
+        assert self.mle_cf is not None and not np.isnan(self.mle_cf)
+        if self.mle_cf < 0.01:
+            return "neutral"
+        alphas, _, _ = self.forward_algo_full(
+            cf=self.mle_cf, std_dev_baf=std_dev_baf
+        )
+        # Chromosome-wide log-evidence per state via logsumexp across sites
+        log_evidence = np.array([logsumexp(alphas[k, :]) for k in range(5)])
+        # Select the aneuploid state (1-4) with highest evidence
+        best = int(np.argmax(log_evidence[1:])) + 1
+        return self.STATE_NAMES[best]
 
 
 class PhaseCorrect:

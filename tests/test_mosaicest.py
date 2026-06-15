@@ -19,32 +19,38 @@ data_disomy = pgt_sim.full_ploidy_sim(m=5000, length=1e7, std_dev=0.1, seed=42)
 data_trisomy = pgt_sim.full_ploidy_sim(m=5000, ploidy=3, length=1e7, std_dev=0.1, seed=42)
 data_monosomy = pgt_sim.full_ploidy_sim(m=5000, ploidy=1, length=1e7, std_dev=0.1, seed=42)
 
+# seed=42 → aploid 3m (maternal gain) and 1m (paternal loss, maternal retained)
+# seed=44 → aploid 3p (paternal gain) and 1p (maternal loss, paternal retained)
+# Using two seeds gives all four parental origins.
+data_pat_gain = pgt_sim.full_ploidy_sim(m=5000, ploidy=3, length=1e7, std_dev=0.1, seed=44)
+data_mat_loss = pgt_sim.full_ploidy_sim(m=5000, ploidy=1, length=1e7, std_dev=0.1, seed=44)
+data_disomy_44 = pgt_sim.full_ploidy_sim(m=5000, length=1e7, std_dev=0.1, seed=44)
+
 # Coherent mosaic fixtures: weighted blend of full-ploidy sims sharing the
 # same parental haplotypes (same seed ⟹ same mat_haps / pat_haps / pos).
 _CF_GAIN = 0.4
 _CF_LOSS = 0.4
 
-_data_mosaic_gain = dict(data_disomy)
-_data_mosaic_gain["baf"] = (
-    (1 - _CF_GAIN) * data_disomy["baf"] + _CF_GAIN * data_trisomy["baf"]
-)
-_data_mosaic_gain["lrr"] = (
-    (1 - _CF_GAIN) * data_disomy["lrr"] + _CF_GAIN * data_trisomy["lrr"]
-)
-_data_mosaic_gain["sigmas"] = (
-    (1 - _CF_GAIN) * data_disomy["sigmas"] + _CF_GAIN * data_trisomy["sigmas"]
-)
 
-_data_mosaic_loss = dict(data_disomy)
-_data_mosaic_loss["baf"] = (
-    (1 - _CF_LOSS) * data_disomy["baf"] + _CF_LOSS * data_monosomy["baf"]
-)
-_data_mosaic_loss["lrr"] = (
-    (1 - _CF_LOSS) * data_disomy["lrr"] + _CF_LOSS * data_monosomy["lrr"]
-)
-_data_mosaic_loss["sigmas"] = (
-    (1 - _CF_LOSS) * data_disomy["sigmas"] + _CF_LOSS * data_monosomy["sigmas"]
-)
+def _blend(base, aneu, cf):
+    d = dict(base)
+    d["baf"] = (1 - cf) * base["baf"] + cf * aneu["baf"]
+    d["lrr"] = (1 - cf) * base["lrr"] + cf * aneu["lrr"]
+    d["sigmas"] = (1 - cf) * base["sigmas"] + cf * aneu["sigmas"]
+    return d
+
+
+# maternal gain (3m) + paternal loss (1m) at seed=42
+_data_mosaic_mat_gain = _blend(data_disomy, data_trisomy, _CF_GAIN)
+_data_mosaic_pat_loss = _blend(data_disomy, data_monosomy, _CF_LOSS)
+
+# paternal gain (3p) + maternal loss (1p) at seed=44
+_data_mosaic_pat_gain = _blend(data_disomy_44, data_pat_gain, _CF_GAIN)
+_data_mosaic_mat_loss = _blend(data_disomy_44, data_mat_loss, _CF_LOSS)
+
+# Aliases used by the existing tests below (seed=42 pair)
+_data_mosaic_gain = _data_mosaic_mat_gain
+_data_mosaic_loss = _data_mosaic_pat_loss
 
 
 def _make(data):
@@ -109,12 +115,16 @@ def test_n_het_minimum():
     t_rate=st.floats(min_value=1e-8, max_value=0.2),
 )
 def test_transition_matrix_rows_sum_to_one(sw_err, t_rate):
-    """All rows of the log-transition matrix must sum to 0 (probability 1)."""
+    """All 5 rows of the log-transition matrix must sum to 0 (probability 1).
+
+    Rows corresponding to aneuploid states contain -inf entries for the
+    cross-type transitions (gain↔loss); logsumexp handles these correctly.
+    """
     m = _make(data_disomy)
     m.create_transition_matrix(switch_err=sw_err, t_rate=t_rate)
-    assert np.isclose(logsumexp(m.A[0, :]), 0.0)
-    assert np.isclose(logsumexp(m.A[1, :]), 0.0)
-    assert np.isclose(logsumexp(m.A[2, :]), 0.0)
+    assert m.A.shape == (5, 5)
+    for row in range(5):
+        assert np.isclose(logsumexp(m.A[row, :]), 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +156,7 @@ def test_forward_loglik_increases_with_cf_for_trisomy():
 
 
 # ---------------------------------------------------------------------------
-# est_mle_cf — point estimation
+# est_mle_cf — point estimation (disomy null; full cases covered in origin section)
 # ---------------------------------------------------------------------------
 
 
@@ -157,36 +167,6 @@ def test_mle_cf_disomy_near_zero():
     assert m.mle_cf is not None
     assert not np.isnan(m.mle_cf)
     assert m.mle_cf < 0.05
-
-
-def test_mle_cf_trisomy_near_one():
-    """Full trisomy: MLE cell fraction should be near 1."""
-    m = _make(data_trisomy)
-    m.est_mle_cf()
-    assert m.mle_cf > 0.8
-
-
-def test_mle_cf_monosomy_near_one():
-    """Full monosomy: MLE cell fraction should be near 1."""
-    m = _make(data_monosomy)
-    m.est_mle_cf()
-    assert m.mle_cf > 0.8
-
-
-def test_mle_cf_mosaic_gain_detected():
-    """40% mosaic trisomy: estimated cf should exceed 0.2."""
-    m = _make(_data_mosaic_gain)
-    m.est_mle_cf()
-    assert not np.isnan(m.mle_cf)
-    assert m.mle_cf > 0.2
-
-
-def test_mle_cf_mosaic_loss_detected():
-    """40% mosaic monosomy: estimated cf should exceed 0.2."""
-    m = _make(_data_mosaic_loss)
-    m.est_mle_cf()
-    assert not np.isnan(m.mle_cf)
-    assert m.mle_cf > 0.2
 
 
 # ---------------------------------------------------------------------------
@@ -230,34 +210,118 @@ def test_ci_mosaic_gain_reasonable():
 
 
 # ---------------------------------------------------------------------------
-# lrt_cf — likelihood-ratio test
+# lrt_cf — disomy null; aneuploid LRT is verified inside _assert_case above
 # ---------------------------------------------------------------------------
 
 
-def test_lrt_cf_disomy_small():
-    """LRT statistic should be small (near 0) for a true disomy."""
+def test_lrt_cf_disomy_not_significant():
+    """LRT statistic should be below the chi2(1) 0.05 threshold for a true disomy."""
     m = _make(data_disomy)
     m.est_mle_cf()
-    assert m.lrt_cf() < 5.0  # well below chi2(1) 0.05 critical value of 3.84
-
-
-def test_lrt_cf_trisomy_large():
-    """LRT statistic should be large and significant for a full trisomy."""
-    m = _make(data_trisomy)
-    m.est_mle_cf()
-    assert m.lrt_cf() > 10.0
-
-
-def test_lrt_cf_mosaic_gain_significant():
-    """LRT should detect 40% mosaic trisomy as significant."""
-    m = _make(_data_mosaic_gain)
-    m.est_mle_cf()
-    assert m.lrt_cf() > 3.84  # chi2(1) p < 0.05
+    assert m.lrt_cf() < _CHI2_THRESH
 
 
 # ---------------------------------------------------------------------------
 # Robustness to parental haplotype errors
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# infer_origin — complete coverage of all four parental origins
+#
+# Convention in the simulator:
+#   aploid='3m' → extra maternal copy      → maternal-gain   (seed=42)
+#   aploid='1m' → maternal copy retained   → paternal-loss   (seed=42)
+#   aploid='3p' → extra paternal copy      → paternal-gain   (seed=44)
+#   aploid='1p' → paternal copy retained   → maternal-loss   (seed=44)
+# ---------------------------------------------------------------------------
+
+_CHI2_THRESH = 3.84  # chi2(1) at p=0.05
+
+
+def _assert_case(data, expected_origin, min_cf, label=""):
+    """Shared helper: fit, check cf, check origin, check LRT."""
+    m = _make(data)
+    m.est_mle_cf()
+    assert not np.isnan(m.mle_cf), f"{label}: mle_cf is nan"
+    assert m.mle_cf > min_cf, f"{label}: mle_cf={m.mle_cf:.4f} not > {min_cf}"
+    assert m.infer_origin() == expected_origin, (
+        f"{label}: got {m.infer_origin()!r}, want {expected_origin!r}"
+    )
+    assert m.lrt_cf() > _CHI2_THRESH, f"{label}: LRT not significant"
+
+
+def test_infer_origin_state_names_complete():
+    """STATE_NAMES covers all five possible return values of infer_origin."""
+    expected = {
+        "neutral", "maternal-gain", "paternal-gain", "maternal-loss", "paternal-loss"
+    }
+    assert set(MosaicEst.STATE_NAMES) == expected
+
+
+def test_disomy_is_neutral_and_lrt_small():
+    """Disomy: mle_cf ≈ 0, labelled neutral, LRT not significant."""
+    m = _make(data_disomy)
+    m.est_mle_cf()
+    assert m.mle_cf < 0.05
+    assert m.infer_origin() == "neutral"
+    assert m.lrt_cf() < _CHI2_THRESH
+
+
+# --- Full aneuploidies ---
+
+def test_full_maternal_gain():
+    """Full maternal trisomy (3m): mle_cf ≈ 1, origin = maternal-gain, LRT large."""
+    _assert_case(data_trisomy, "maternal-gain", min_cf=0.8, label="full-maternal-gain")
+
+
+def test_full_paternal_gain():
+    """Full paternal trisomy (3p): mle_cf ≈ 1, origin = paternal-gain, LRT large."""
+    _assert_case(data_pat_gain, "paternal-gain", min_cf=0.8, label="full-paternal-gain")
+
+
+def test_full_paternal_loss():
+    """Full paternal monosomy (1m / maternal retained): origin = paternal-loss."""
+    _assert_case(data_monosomy, "paternal-loss", min_cf=0.8, label="full-paternal-loss")
+
+
+def test_full_maternal_loss():
+    """Full maternal monosomy (1p / paternal retained): origin = maternal-loss."""
+    _assert_case(data_mat_loss, "maternal-loss", min_cf=0.8, label="full-maternal-loss")
+
+
+# --- Mosaic aneuploidies (40% cell fraction) ---
+
+def test_mosaic_maternal_gain():
+    """40% maternal-gain mosaic: mle_cf > 0.2, correct origin, LRT significant."""
+    _assert_case(
+        _data_mosaic_mat_gain, "maternal-gain", min_cf=0.2,
+        label="mosaic-maternal-gain",
+    )
+
+
+def test_mosaic_paternal_gain():
+    """40% paternal-gain mosaic: mle_cf > 0.2, correct origin, LRT significant."""
+    _assert_case(
+        _data_mosaic_pat_gain, "paternal-gain", min_cf=0.2,
+        label="mosaic-paternal-gain",
+    )
+
+
+def test_mosaic_paternal_loss():
+    """40% paternal-loss mosaic: mle_cf > 0.2, correct origin, LRT significant."""
+    _assert_case(
+        _data_mosaic_pat_loss, "paternal-loss", min_cf=0.2,
+        label="mosaic-paternal-loss",
+    )
+
+
+def test_mosaic_maternal_loss():
+    """40% maternal-loss mosaic: mle_cf > 0.2, correct origin, LRT significant."""
+    _assert_case(
+        _data_mosaic_mat_loss, "maternal-loss", min_cf=0.2,
+        label="mosaic-maternal-loss",
+    )
 
 
 # ---------------------------------------------------------------------------
