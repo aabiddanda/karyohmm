@@ -3,7 +3,6 @@
 import numpy as np
 from scipy.stats import (
     beta,
-    betabinom,
     binom,
     norm,
     lognorm,
@@ -486,8 +485,60 @@ class PGTSimBase:
         lrr = norm.rvs(self.lrr_mu[ploidy], scale=sigmas, size=m)
         return lrr, sigmas
 
+    def sim_allelic_balance(self, geno, ploidy, tot_reads):
+        """Draw the number of alt. reads amongst the true underlying alleles.
+
+        Reads sample the underlying chromosomes binomially at rate
+        `geno / ploidy`.  Homozygous states are the deterministic endpoints of
+        that draw since every read comes from a copy of the same allele, so
+        they only pick up noise once `sim_read_errors` is applied.
+
+        Args:
+            geno (`int`): alternate allele dosage at the site.
+            ploidy (`int`): number of chromosomes at the site.
+            tot_reads (`int`): total number of reads at the site.
+
+        Output:
+            alt_reads (`int`): true number of reads with alt. allele.
+
+        """
+        if ploidy == 0:
+            # Nullisomy has no true allele, so background reads are all errors.
+            return 0
+        assert 0 <= geno <= ploidy
+        return binom.rvs(n=tot_reads, p=geno / ploidy)
+
+    def sim_read_errors(self, alt_reads, ref_reads, eps=1e-2):
+        """Flip individual reads to the opposite allele at the error rate.
+
+        Each read independently reports the wrong allele with probability
+        `eps`, so the two counts exchange a pair of binomial draws.  Applying
+        the error after the allelic balance keeps the two noise sources
+        distinct: sampling of the underlying chromosomes only acts where both
+        alleles are truly present, whereas sequencing error acts on every
+        read.  The total depth at a site is unchanged by the flip.
+
+        Args:
+            alt_reads (`np.array`): true number of reads with alt. allele.
+            ref_reads (`np.array`): true number of reads with ref. allele.
+            eps (`float`): per-read sequencing error rate.
+
+        Output:
+            alt_reads (`np.array`): observed number of reads with alt. allele.
+            ref_reads (`np.array`): observed number of reads with ref. allele.
+
+        """
+        assert alt_reads.size == ref_reads.size
+        assert (0 < eps) & (eps <= 0.5)
+        alt_to_ref = binom.rvs(n=alt_reads.astype(int), p=eps)
+        ref_to_alt = binom.rvs(n=ref_reads.astype(int), p=eps)
+        return (
+            (alt_reads - alt_to_ref + ref_to_alt).astype(np.uint16),
+            (ref_reads - ref_to_alt + alt_to_ref).astype(np.uint16),
+        )
+
     def sim_read_counts(
-        self, mat_hap, pat_hap, ploidy, coverage=1.0, a=10.0, b=10.0, eps=1e-2, seed=42
+        self, mat_hap, pat_hap, ploidy, coverage=1.0, eps=1e-2, seed=42
     ):
         """Simulate read counts for embryo biopsies.
 
@@ -497,9 +548,7 @@ class PGTSimBase:
             pos (`np.array`): position of individual variants.
             ploidy (`int`): integer of number of chromosomes being simulated.
             coverage (`float`): mean coverage for a standard diploid individual.
-            a (`float`): shape parameter for beta-binomial.
-            b (`float`): scale parameter for beta-binomial.
-            eps (`float`): small noise parameter.
+            eps (`float`): per-read sequencing error rate.
             seed (`int`): random number seed.
 
         Output:
@@ -511,7 +560,6 @@ class PGTSimBase:
         assert seed > 0
         assert coverage > 0.0
         assert mat_hap.size == pat_hap.size
-        assert (a > 0) & (b > 0)
         assert ploidy in [0, 1, 2, 3]
         assert (0 < eps) & (eps <= 0.5)
         np.random.seed(seed)
@@ -523,15 +571,14 @@ class PGTSimBase:
         for i, g in enumerate(true_geno):
             # 1. Simulate the total number of reads at the site
             tot_reads = poisson.rvs(mu=coverage * ((ploidy + eps) / 2.0))
-            # 2. Simulate the total allelic balance as from a beta-binomial random-variable
+            # 2. Simulate the allelic balance amongst the true alleles
             if tot_reads > 0:
-                p = (g + eps) / ploidy if ploidy > 0 else eps
-                p = (p - 2 * eps) if p > 1 else p
-                assert (p > 0) & (p < 1)
-                alt_read_cnt[i] = betabinom.rvs(
-                    n=tot_reads, a=p * (a + b), b=(1.0 - p) * (a + b)
-                )
+                alt_read_cnt[i] = self.sim_allelic_balance(g, ploidy, tot_reads)
                 ref_read_cnt[i] = tot_reads - alt_read_cnt[i]
+        # 3. Flip individual reads to the opposite allele at the error rate
+        alt_read_cnt, ref_read_cnt = self.sim_read_errors(
+            alt_read_cnt, ref_read_cnt, eps=eps
+        )
         return true_geno, alt_read_cnt, ref_read_cnt
 
     def sim_joint_het(self, switch=False, nsibs=1, meta_seed=42, **kwargs):
@@ -597,8 +644,7 @@ class PGTSim(PGTSimBase):
         mix_prop=0.3,
         alpha=1.0,
         coverage=5.0,
-        a=10.0,
-        b=10.0,
+        eps=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -653,8 +699,7 @@ class PGTSim(PGTSimBase):
                 pat_hap1,
                 ploidy=ploidy,
                 coverage=coverage,
-                a=a,
-                b=b,
+                eps=eps,
                 seed=seed,
             )
             baf = None
@@ -726,8 +771,7 @@ class PGTSim(PGTSimBase):
         mix_prop=0.3,
         alpha=1.0,
         coverage=5.0,
-        a=10.0,
-        b=10.0,
+        eps=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -794,8 +838,7 @@ class PGTSim(PGTSimBase):
                     pat_hap1,
                     ploidy=ploidy,
                     coverage=coverage,
-                    a=a,
-                    b=b,
+                    eps=eps,
                     seed=seed,
                 )
                 baf = None
@@ -844,8 +887,7 @@ class PGTSim(PGTSimBase):
         mix_prop=0.3,
         alpha=0.5,
         coverage=5.0,
-        a=10.0,
-        b=10.0,
+        eps=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -880,8 +922,7 @@ class PGTSim(PGTSimBase):
                 pat_hap1,
                 ploidy=ploidy,
                 coverage=coverage,
-                a=a,
-                b=b,
+                eps=eps,
                 seed=seed,
             )
             baf = None
@@ -1442,8 +1483,6 @@ class PGTSimSegmental(PGTSimBase):
         pat_hap,
         ploidies,
         coverage=1.0,
-        a=10.0,
-        b=10.0,
         eps=1e-2,
         seed=42,
     ):
@@ -1454,9 +1493,7 @@ class PGTSimSegmental(PGTSimBase):
             pat_hap (`np.array`): 1 x M numpy array for paternal haplotype.
             ploidies (`np.array`): ploidy count of number of chromosomes being simulated.
             coverage (`float`): mean coverage for a standard diploid individual.
-            a (`float`): shape parameter for beta-binomial.
-            b (`float`): scale parameter for beta-binomial.
-            eps (`float`): small noise parameter.
+            eps (`float`): per-read sequencing error rate.
             seed (`int`): random number seed.
 
         Output:
@@ -1469,7 +1506,6 @@ class PGTSimSegmental(PGTSimBase):
         assert coverage > 0.0
         assert mat_hap.size == pat_hap.size
         assert ploidies.size == mat_hap.size
-        assert (a > 0) & (b > 0)
         assert np.all(np.isin(ploidies, [0, 1, 2, 3]))
         assert (0 < eps) & (eps <= 0.5)
         np.random.seed(seed)
@@ -1481,15 +1517,14 @@ class PGTSimSegmental(PGTSimBase):
         for i, g in enumerate(true_geno):
             # 1. Simulate the total number of reads at the site
             tot_reads = poisson.rvs(mu=coverage * ((ploidies[i] + eps) / 2.0))
-            # 2. Simulate the total allelic balance as from a beta-binomial random-variable
+            # 2. Simulate the allelic balance amongst the true alleles
             if tot_reads > 0:
-                p = (g + eps) / ploidies[i] if ploidies[i] > 0 else eps
-                p = (p - 2 * eps) if p > 1 else p
-                assert (p > 0) & (p < 1)
-                alt_read_cnt[i] = betabinom.rvs(
-                    n=tot_reads, a=p * (a + b), b=(1.0 - p) * (a + b)
-                )
+                alt_read_cnt[i] = self.sim_allelic_balance(g, ploidies[i], tot_reads)
                 ref_read_cnt[i] = tot_reads - alt_read_cnt[i]
+        # 3. Flip individual reads to the opposite allele at the error rate
+        alt_read_cnt, ref_read_cnt = self.sim_read_errors(
+            alt_read_cnt, ref_read_cnt, eps=eps
+        )
         return true_geno, alt_read_cnt, ref_read_cnt
 
     def full_segmental_sim(
@@ -1505,8 +1540,7 @@ class PGTSimSegmental(PGTSimBase):
         mix_prop=0.7,
         mean_size=10,
         coverage=5.0,
-        a=10.0,
-        b=10.0,
+        eps=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -1545,8 +1579,7 @@ class PGTSimSegmental(PGTSimBase):
                 pat_hap1,
                 ploidy=ploidies,
                 coverage=coverage,
-                a=a,
-                b=b,
+                eps=eps,
                 seed=seed,
             )
             baf = None
@@ -1619,8 +1652,7 @@ class PGTSimSegmental(PGTSimBase):
         mix_prop=0.7,
         mean_size=10,
         coverage=5.0,
-        a=10.0,
-        b=10.0,
+        eps=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -1657,8 +1689,7 @@ class PGTSimSegmental(PGTSimBase):
                 pat_hap1,
                 ploidy=ploidies,
                 coverage=coverage,
-                a=a,
-                b=b,
+                eps=eps,
                 seed=seed,
             )
             baf = None
