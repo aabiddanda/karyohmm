@@ -1,4 +1,4 @@
-from libc.math cimport erf, exp, expm1, log, log1p, pi, sqrt
+from libc.math cimport erf, exp, expm1, lgamma, log, log1p, pi, sqrt
 import numpy as np
 
 
@@ -51,9 +51,18 @@ cdef double psi(double x):
     else:
         return log((1.0 + erf(x / sqrt2))) - log(2.0)
 
-cdef double logbinomial(int alt, int ref, double p):
-    """Log-probability mass function of the binomial distribution."""
-    return alt * log(p) + ref*log(1. - p)
+cdef double logbinomial_pmf(int alt, int ref, double p):
+    """Log-pmf of the binomial distribution, including the coefficient.
+
+    The coefficient depends only on the depth at the site, so it cancels in
+    any posterior over states.  It is retained so the reported log-likelihood
+    is a proper one and stays comparable across models.
+    """
+    cdef int n = alt + ref
+    return (
+        lgamma(n + 1.0) - lgamma(alt + 1.0) - lgamma(ref + 1.0)
+        + alt * log(p) + ref * log(1. - p)
+    )
 
 cdef double norm_pdf(double x):
     """PDF for the normal distribution function in log-space.
@@ -467,17 +476,50 @@ def forward_mcc_phased_poc(
     return total_ll
 
 
-cpdef double emission_readcounts(int alt, int ref, double m, double p, int k=2, double eps=1e-6):
-    """Emission distribution for read counts at specific SNVs.
+cpdef double emission_reads(int alt, int ref, double m, double p, int k=2, double eps=1e-2):
+    """Emission distribution for the allelic balance of read counts at a SNV.
 
-    NOTE: currently this only includes the emission for the balance between alleles vs. total coverage
+    Each read draws its true allele from the underlying chromosomes with
+    probability mu = (m + p) / k, then reports the opposite allele with
+    probability eps.  Reads remain independent under that composition, so the
+    observed alt count is exactly Binomial(alt + ref, q) with
+
+        q = mu * (1 - eps) + (1 - mu) * eps
+
+    The eps floor is symmetric, so heterozygous states sit at exactly 0.5 and
+    homozygous states are pulled off the 0/1 boundary -- without it a single
+    discordant read would drive a homozygous state to -inf.
+
+    NOTE: nullisomy is denoted by m == -1 and p == -1, where there is no true
+    allele and every read is background, giving q = eps.
     """
-    cdef double mu_i
+    cdef double mu_i, q
     if (m == -1) & (p == -1):
-        # This is the nullisomy case for allelic balance
-        return logbinomial(alt, ref, p=eps)
-    mu_i = (m + p) / k
-    return logbinomial(alt, ref, p=mu_i)
+        q = eps
+    else:
+        mu_i = (m + p) / k
+        q = mu_i * (1.0 - eps) + (1.0 - mu_i) * eps
+    return logbinomial_pmf(alt, ref, q)
+
+
+cpdef double emission_depth(int depth, int k=2, double coverage=1.0, double mismap_rate=1e-2):
+    """Emission distribution for total read depth conditional on ploidy.
+
+    Depth is Poisson with a mean that scales linearly in copy number,
+    calibrated so a disomic site averages `coverage` reads.  `mismap_rate`
+    supplies the background of mismapped reads that keeps a nullisomic site
+    from having an identically-zero mean.  This is the read-based analogue of
+    `emission_lrr` and carries the copy-number signal.
+
+    NOTE: missing depth is denoted as -9, matching the emission_lrr convention.
+    """
+    cdef double lambda_k
+    if depth == -9:
+        return -1
+    lambda_k = coverage * ((k + mismap_rate) / 2.0)
+    if lambda_k < 1e-12:
+        lambda_k = 1e-12
+    return depth * log(lambda_k) - lambda_k - lgamma(depth + 1.0)
 
 cpdef double mix_loglik(double[:] bafs, double pi0=0.5, double theta=0.1, double std_dev=0.2):
     """Mixture log-likelihood for expected heterozygotes to estimate baf-deviation."""
