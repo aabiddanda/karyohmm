@@ -119,6 +119,37 @@ def test_pgt_segmental(m, ploidy, frac_chrom):
         assert np.all(data["ploidies"] == 2)
 
 
+@pytest.mark.parametrize("mismap_rate", [0.0, 1e-2, 1e-1])
+def test_mismap_rate_sets_background_depth(mismap_rate):
+    """`mismap_rate` controls depth at nullisomic sites, independently of `eps`."""
+    data = pgt_sim.full_ploidy_sim(
+        m=4000,
+        length=20e6,
+        ploidy=0,
+        reads=True,
+        coverage=50.0,
+        mismap_rate=mismap_rate,
+    )
+    depth = data["alt_reads"].astype(float) + data["ref_reads"]
+    assert depth.mean() == pytest.approx(50.0 * mismap_rate / 2.0, abs=0.1)
+    if mismap_rate == 0.0:
+        assert np.all(depth == 0)
+
+
+@pytest.mark.parametrize("eps", [1e-3, 5e-2])
+def test_eps_leaves_depth_untouched(eps):
+    """`eps` shifts allele fractions but must not change total depth."""
+    data = pgt_sim.full_ploidy_sim(
+        m=4000, length=20e6, ploidy=2, reads=True, coverage=50.0, eps=eps
+    )
+    alt = data["alt_reads"].astype(float)
+    depth = alt + data["ref_reads"]
+    geno = data["geno_embryo"]
+    assert depth.mean() == pytest.approx(50.0 * (2 + 1e-2) / 2.0, abs=0.5)
+    hom_ref = geno == 0
+    assert alt[hom_ref].sum() / depth[hom_ref].sum() == pytest.approx(eps, abs=5e-3)
+
+
 @given(
     m=st.integers(min_value=1000, max_value=5000),
     ploidy=st.integers(min_value=0, max_value=3),

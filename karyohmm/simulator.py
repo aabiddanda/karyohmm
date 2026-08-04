@@ -485,6 +485,30 @@ class PGTSimBase:
         lrr = norm.rvs(self.lrr_mu[ploidy], scale=sigmas, size=m)
         return lrr, sigmas
 
+    def sim_total_depth(self, ploidy, coverage=1.0, mismap_rate=1e-2):
+        """Draw the total number of reads at a site given its copy number.
+
+        Depth scales linearly with copy number, calibrated so that a disomic
+        site averages `coverage` reads.  `mismap_rate` adds a small background
+        of reads that do not originate from the true copies at all -- reads
+        that mismapped here from elsewhere in the genome.  It is expressed in
+        copy-number units, so a nullisomic site still averages
+        `coverage * mismap_rate / 2` reads rather than exactly zero.
+
+        Args:
+            ploidy (`int`): number of chromosomes at the site.
+            coverage (`float`): mean coverage for a standard diploid individual.
+            mismap_rate (`float`): background depth from mismapped reads, in
+                copy-number units.
+
+        Output:
+            tot_reads (`int`): total number of reads at the site.
+
+        """
+        assert coverage > 0.0
+        assert 0.0 <= mismap_rate < 1.0
+        return poisson.rvs(mu=coverage * ((ploidy + mismap_rate) / 2.0))
+
     def sim_allelic_balance(self, geno, ploidy, tot_reads):
         """Draw the number of alt. reads amongst the true underlying alleles.
 
@@ -538,7 +562,14 @@ class PGTSimBase:
         )
 
     def sim_read_counts(
-        self, mat_hap, pat_hap, ploidy, coverage=1.0, eps=1e-2, seed=42
+        self,
+        mat_hap,
+        pat_hap,
+        ploidy,
+        coverage=1.0,
+        eps=1e-2,
+        mismap_rate=1e-2,
+        seed=42,
     ):
         """Simulate read counts for embryo biopsies.
 
@@ -548,6 +579,8 @@ class PGTSimBase:
             ploidy (`int`): integer of number of chromosomes being simulated.
             coverage (`float`): mean coverage for a standard diploid individual.
             eps (`float`): per-read sequencing error rate.
+            mismap_rate (`float`): background depth from mismapped reads, in
+                copy-number units (see `sim_total_depth`).
             seed (`int`): random number seed.
 
         Output:
@@ -569,7 +602,7 @@ class PGTSimBase:
         )
         for i, g in enumerate(true_geno):
             # 1. Simulate the total number of reads at the site
-            tot_reads = poisson.rvs(mu=coverage * ((ploidy + eps) / 2.0))
+            tot_reads = self.sim_total_depth(ploidy, coverage, mismap_rate)
             # 2. Simulate the allelic balance amongst the true alleles
             if tot_reads > 0:
                 alt_read_cnt[i] = self.sim_allelic_balance(g, ploidy, tot_reads)
@@ -644,6 +677,7 @@ class PGTSim(PGTSimBase):
         alpha=1.0,
         coverage=5.0,
         eps=1e-2,
+        mismap_rate=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -699,6 +733,7 @@ class PGTSim(PGTSimBase):
                 ploidy=ploidy,
                 coverage=coverage,
                 eps=eps,
+                mismap_rate=mismap_rate,
                 seed=seed,
             )
             baf = None
@@ -771,6 +806,7 @@ class PGTSim(PGTSimBase):
         alpha=1.0,
         coverage=5.0,
         eps=1e-2,
+        mismap_rate=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -838,6 +874,7 @@ class PGTSim(PGTSimBase):
                     ploidy=ploidy,
                     coverage=coverage,
                     eps=eps,
+                    mismap_rate=mismap_rate,
                     seed=seed,
                 )
                 baf = None
@@ -887,6 +924,7 @@ class PGTSim(PGTSimBase):
         alpha=0.5,
         coverage=5.0,
         eps=1e-2,
+        mismap_rate=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -922,6 +960,7 @@ class PGTSim(PGTSimBase):
                 ploidy=ploidy,
                 coverage=coverage,
                 eps=eps,
+                mismap_rate=mismap_rate,
                 seed=seed,
             )
             baf = None
@@ -1495,6 +1534,7 @@ class PGTSimSegmental(PGTSimBase):
         ploidies,
         coverage=1.0,
         eps=1e-2,
+        mismap_rate=1e-2,
         seed=42,
     ):
         """Simulate read counts for segmental embryo biopsies.
@@ -1505,6 +1545,8 @@ class PGTSimSegmental(PGTSimBase):
             ploidies (`np.array`): ploidy count of number of chromosomes being simulated.
             coverage (`float`): mean coverage for a standard diploid individual.
             eps (`float`): per-read sequencing error rate.
+            mismap_rate (`float`): background depth from mismapped reads, in
+                copy-number units (see `sim_total_depth`).
             seed (`int`): random number seed.
 
         Output:
@@ -1527,7 +1569,7 @@ class PGTSimSegmental(PGTSimBase):
         )
         for i, g in enumerate(true_geno):
             # 1. Simulate the total number of reads at the site
-            tot_reads = poisson.rvs(mu=coverage * ((ploidies[i] + eps) / 2.0))
+            tot_reads = self.sim_total_depth(ploidies[i], coverage, mismap_rate)
             # 2. Simulate the allelic balance amongst the true alleles
             if tot_reads > 0:
                 alt_read_cnt[i] = self.sim_allelic_balance(g, ploidies[i], tot_reads)
@@ -1552,6 +1594,7 @@ class PGTSimSegmental(PGTSimBase):
         mean_size=10,
         coverage=5.0,
         eps=1e-2,
+        mismap_rate=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -1591,6 +1634,7 @@ class PGTSimSegmental(PGTSimBase):
                 ploidies=ploidies,
                 coverage=coverage,
                 eps=eps,
+                mismap_rate=mismap_rate,
                 seed=seed,
             )
             baf = None
@@ -1667,6 +1711,7 @@ class PGTSimSegmental(PGTSimBase):
         mean_size=10,
         coverage=5.0,
         eps=1e-2,
+        mismap_rate=1e-2,
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
@@ -1709,6 +1754,7 @@ class PGTSimSegmental(PGTSimBase):
                 ploidies=ploidies,
                 coverage=coverage,
                 eps=eps,
+                mismap_rate=mismap_rate,
                 seed=seed,
             )
             baf = None
