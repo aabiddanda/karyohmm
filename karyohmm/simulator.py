@@ -545,7 +545,6 @@ class PGTSimBase:
         Args:
             mat_hap (`np.array`): 1 x M numpy array for maternal haplotype.
             pat_hap (`np.array`): 1 x M numpy array for paternal haplotype.
-            pos (`np.array`): position of individual variants.
             ploidy (`int`): integer of number of chromosomes being simulated.
             coverage (`float`): mean coverage for a standard diploid individual.
             eps (`float`): per-read sequencing error rate.
@@ -967,7 +966,7 @@ class PGTSim(PGTSimBase):
             "alt_reads": alt_reads,
             "ref_reads": ref_reads,
             "pos": pos,
-            "af": np.ones(baf.size) * np.nan if afs is None else afs,
+            "af": np.ones(pos.size) * np.nan if afs is None else afs,
             "aploid": aploid,
             "ploidy": ploidy,
             "rec_rate": rec_rate,
@@ -1311,12 +1310,24 @@ class PGTSimSegmental(PGTSimBase):
         zs_paternal[0] = binom.rvs(1, 0.5)
         ploidies[0] = 2
         if start == 0:
+            # NOTE: the haplotype paths must be dropped/added to match the
+            # ploidy here, exactly as the loop below does for i >= 1.
             if aneu_type == "0":
                 ploidies[0] = 0
-            elif aneu_type in ["1m", "1p"]:
+                zs_maternal[0] = np.nan
+                zs_paternal[0] = np.nan
+            elif aneu_type == "1m":
                 ploidies[0] = 1
-            elif aneu_type in ["3m", "3p"]:
+                zs_paternal[0] = np.nan
+            elif aneu_type == "1p":
+                ploidies[0] = 1
+                zs_maternal[0] = np.nan
+            elif aneu_type == "3m":
                 ploidies[0] = 3
+                zs1_maternal[0] = binom.rvs(1, 0.5)
+            elif aneu_type == "3p":
+                ploidies[0] = 3
+                zs1_paternal[0] = binom.rvs(1, 0.5)
         for i in range(1, m):
             d = pos[i] - pos[i - 1]
             if (i >= start) and (i <= end):
@@ -1574,10 +1585,10 @@ class PGTSimSegmental(PGTSimBase):
             seed=seed,
         )
         if reads:
-            geno, alt_reads, ref_reads = self.sim_read_counts(
+            geno, alt_reads, ref_reads = self.sim_read_counts_segmental(
                 mat_hap1,
                 pat_hap1,
-                ploidy=ploidies,
+                ploidies=ploidies,
                 coverage=coverage,
                 eps=eps,
                 seed=seed,
@@ -1597,6 +1608,8 @@ class PGTSimSegmental(PGTSimBase):
             )
             alt_reads = None
             ref_reads = None
+            assert geno.size == m
+            assert baf.size == m
         (
             mat_haps_prime,
             pat_haps_prime,
@@ -1611,8 +1624,7 @@ class PGTSimSegmental(PGTSimBase):
         pat_err_idx, pat_haps_err = self.create_genotyping_errors(
             pat_haps_prime, err_rate=err_rate, seed=seed
         )
-        assert geno.size == m
-        assert baf.size == m
+        assert pos.size == m
         res_table = {
             "mat_haps": mat_haps,
             "pat_haps": pat_haps,
@@ -1647,6 +1659,8 @@ class PGTSimSegmental(PGTSimBase):
         pos,
         reads=False,
         afs=None,
+        ploidy=2,
+        mat_skew=0.5,
         rec_rate=1e-4,
         std_dev=0.1,
         mix_prop=0.7,
@@ -1664,6 +1678,9 @@ class PGTSimSegmental(PGTSimBase):
         assert mat_haps.shape[1] == pos.size
         assert pat_haps.shape[1] == pos.size
         m = pos.size
+        aneu_type, (start, end) = self.seg_aneuploidy(
+            m=m, mean_size=mean_size, ploidy=ploidy, mat_skew=mat_skew, seed=seed
+        )
         (
             mat_hap1,
             pat_hap1,
@@ -1679,15 +1696,17 @@ class PGTSimSegmental(PGTSimBase):
             mat_haps,
             pat_haps,
             pos,
+            start=start,
+            end=end,
+            aneu_type=aneu_type,
             rec_rate=rec_rate,
-            mean_size=mean_size,
             seed=seed,
         )
         if reads:
-            geno, alt_reads, ref_reads = self.sim_read_counts(
+            geno, alt_reads, ref_reads = self.sim_read_counts_segmental(
                 mat_hap1,
                 pat_hap1,
-                ploidy=ploidies,
+                ploidies=ploidies,
                 coverage=coverage,
                 eps=eps,
                 seed=seed,
@@ -1705,6 +1724,10 @@ class PGTSimSegmental(PGTSimBase):
                 mix_prop=mix_prop,
                 seed=seed,
             )
+            alt_reads = None
+            ref_reads = None
+            assert geno.size == m
+            assert baf.size == m
         (
             mat_haps_prime,
             pat_haps_prime,
@@ -1736,7 +1759,7 @@ class PGTSimSegmental(PGTSimBase):
             "baf": baf,
             "alt_reads": alt_reads,
             "ref_reads": ref_reads,
-            "af": np.ones(baf.size) * np.nan if afs is None else afs,
+            "af": np.ones(m) * np.nan if afs is None else afs,
             "pos": pos,
             "rec_rate": rec_rate,
             "std_dev": std_dev,

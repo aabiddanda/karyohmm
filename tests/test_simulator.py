@@ -119,6 +119,69 @@ def test_pgt_segmental(m, ploidy, frac_chrom):
         assert np.all(data["ploidies"] == 2)
 
 
+@given(
+    m=st.integers(min_value=1000, max_value=5000),
+    ploidy=st.integers(min_value=0, max_value=3),
+    frac_chrom=st.floats(min_value=0.1, max_value=0.5),
+)
+@settings(max_examples=10, deadline=5000)
+def test_pgt_segmental_reads(m, ploidy, frac_chrom):
+    """Test for PGT segmental aneuploidy simulation with read counts."""
+    mean_size = np.round(m * frac_chrom)
+    data = pgt_sim_segmental.full_segmental_sim(
+        m=m, reads=True, ploidy=ploidy, mean_size=mean_size, coverage=20.0
+    )
+    assert data["m"] == m
+    assert data["baf"] is None
+    assert np.all(data["alt_reads"] >= 0)
+    assert np.all(data["ref_reads"] >= 0)
+    # Depth must track the per-site copy number of the segment.
+    depth = data["alt_reads"].astype(float) + data["ref_reads"]
+    ploidies = data["ploidies"]
+    means = {k: depth[ploidies == k].mean() for k in np.unique(ploidies)}
+    assert sorted(means) == sorted(means, key=lambda k: means[k])
+
+
+@pytest.mark.parametrize("aneu_type", ["0", "1m", "1p", "2", "3m", "3p"])
+def test_segmental_paths_dosage_le_ploidy(aneu_type):
+    """Embryo dosage can never exceed the ploidy, including at the first site."""
+    rng = np.random.default_rng(0)
+    m = 200
+    mat_haps = rng.integers(0, 2, (2, m))
+    pat_haps = rng.integers(0, 2, (2, m))
+    pos = np.sort(rng.uniform(high=1e6, size=m))
+    for start in [0, 1, 5]:
+        out = pgt_sim_segmental.sim_haplotype_paths_segmental(
+            mat_haps, pat_haps, pos, start=start, end=start + 20, aneu_type=aneu_type
+        )
+        mat_hap1, pat_hap1, ploidies = out[0], out[1], out[9]
+        geno = mat_hap1.astype(int) + pat_hap1.astype(int)
+        assert np.all(geno <= ploidies)
+
+
+@pytest.mark.parametrize("reads", [True, False])
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+def test_segmental_sim_from_haps(reads, ploidy):
+    """Segmental simulation from known parental haplotypes runs in both modes."""
+    rng = np.random.default_rng(0)
+    m = 1000
+    mat_haps = rng.integers(0, 2, (2, m))
+    pat_haps = rng.integers(0, 2, (2, m))
+    pos = np.sort(rng.uniform(high=10e6, size=m))
+    data = pgt_sim_segmental.sim_from_haps(
+        mat_haps, pat_haps, pos, reads=reads, ploidy=ploidy, mean_size=200
+    )
+    assert np.asarray(data["af"]).size == m
+    if reads:
+        assert data["baf"] is None
+        assert np.all(data["alt_reads"] >= 0)
+        assert np.all(data["ref_reads"] >= 0)
+    else:
+        assert data["baf"].size == m
+        assert data["alt_reads"] is None
+        assert data["ref_reads"] is None
+
+
 @pytest.mark.parametrize(
     "mat_skew,ploidy,expected",
     [
