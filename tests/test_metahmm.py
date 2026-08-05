@@ -2,7 +2,11 @@
 
 import numpy as np
 import pytest
-from karyohmm_utils import create_index_arrays, transition_kernel
+from karyohmm_utils import (
+    build_emission_matrix,
+    create_index_arrays,
+    transition_kernel,
+)
 from scipy.special import logsumexp as logsumexp_sp
 
 from karyohmm import MetaHMM, PGTSim
@@ -179,6 +183,53 @@ def test_forward_vs_backward_loglik(data):
         pat_haps=data["pat_haps"],
     )
     assert np.isclose(fwd_loglik, bwd_loglik, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "data", [data_disomy, data_trisomy, data_monosomy, data_nullisomy]
+)
+@pytest.mark.parametrize("mat_err,pat_err", [(0.0, 0.0), (1e-2, 2e-2)])
+def test_forward_vs_backward_loglik_shared_emissions(data, mat_err, pat_err):
+    """Forward and backward must agree across ploidies and both emission branches.
+
+    They share build_emission_matrix, so a mismatch here means the two have
+    drifted apart and any forward-backward posterior would be invalid.
+    """
+    hmm = MetaHMM()
+    kwargs = dict(
+        bafs=data["baf"],
+        lrrs=data["lrr"],
+        sigmas=data["sigmas"],
+        pos=data["pos"],
+        mat_haps=data["mat_haps"],
+        pat_haps=data["pat_haps"],
+        mat_err=mat_err,
+        pat_err=pat_err,
+    )
+    _, _, _, _, fwd_loglik = hmm.forward_algorithm(**kwargs)
+    _, _, _, _, bwd_loglik = hmm.backward_algorithm(**kwargs)
+    assert np.isclose(fwd_loglik, bwd_loglik, atol=1e-6)
+
+
+@pytest.mark.parametrize("mat_err,pat_err", [(0.0, 0.0), (1e-2, 2e-2)])
+def test_build_emission_matrix_shape_and_finiteness(mat_err, pat_err):
+    """The shared emission matrix is (m x n) and finite on both branches."""
+    hmm = MetaHMM()
+    data = data_disomy
+    emit = build_emission_matrix(
+        data["baf"],
+        data["lrr"],
+        data["sigmas"],
+        data["mat_haps"],
+        data["pat_haps"],
+        hmm.states,
+        pi0=0.5,
+        std_dev=0.25,
+        mat_err=mat_err,
+        pat_err=pat_err,
+    )
+    assert emit.shape == (len(hmm.states), data["baf"].size)
+    assert np.all(np.isfinite(emit))
 
 
 @pytest.mark.parametrize("data", [data_disomy, data_trisomy, data_monosomy])

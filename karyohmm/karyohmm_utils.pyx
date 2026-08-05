@@ -621,15 +621,20 @@ cpdef transition_kernel(K0, K1, double d=1e3, double r=1e-8, double a=1e-2, int 
     return np.log(A)
 
 
-def forward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, int unphased=0, double mat_err=0.0, double pat_err=0.0):
-    """Helper function for forward algorithm loop-optimization."""
+def build_emission_matrix(bafs, lrrs, sigmas, mat_haps, pat_haps, states, double pi0=0.2, double std_dev=0.25, double mat_err=0.0, double pat_err=0.0):
+    """Precompute the (m x n) emission matrix for the trio state space.
+
+    The emission term is independent of the HMM recursion, so it is shared by
+    forward_algo, backward_algo and viterbi_algo -- keeping one definition is
+    what stops the three from ever disagreeing about the model being run.
+
+    Takes only the emission-side inputs: the transition parameters (pos, r, a,
+    unphased, karyotypes) are deliberately absent.
+    """
     cdef int i, j, n, m
-    cdef float di
     n = bafs.size
     m = len(states)
     ks = [sum([s >= 0 for s in state]) for state in states]
-    K0, K1 = create_index_arrays(karyotypes)
-    # Precompute full emission matrix (m x n) — independent of HMM recursion
     emit = np.empty((m, n))
     for j in range(m):
         for i in range(n):
@@ -644,6 +649,20 @@ def forward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes
                 emit[j, i] = emission_baf(
                     bafs[i], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j],
                 ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
+    return emit
+
+
+def forward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, int unphased=0, double mat_err=0.0, double pat_err=0.0):
+    """Helper function for forward algorithm loop-optimization."""
+    cdef int i, j, n, m
+    cdef float di
+    n = bafs.size
+    m = len(states)
+    K0, K1 = create_index_arrays(karyotypes)
+    emit = build_emission_matrix(
+        bafs, lrrs, sigmas, mat_haps, pat_haps, states,
+        pi0=pi0, std_dev=std_dev, mat_err=mat_err, pat_err=pat_err,
+    )
     alphas = np.zeros(shape=(m, n))
     alphas[:, 0] = log(1.0 / m) + emit[:, 0]
     scaler = np.zeros(n)
@@ -665,23 +684,11 @@ def backward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotype
     cdef float di
     n = bafs.size
     m = len(states)
-    ks = [sum([s >= 0 for s in state]) for state in states]
     K0, K1 = create_index_arrays(karyotypes)
-    # Precompute full emission matrix (m x n) — independent of HMM recursion
-    emit = np.empty((m, n))
-    for j in range(m):
-        for i in range(n):
-            if mat_err > 0.0 or pat_err > 0.0:
-                emit[j, i] = emission_baf_parent_err(
-                    bafs[i], mat_haps[:, i], pat_haps[:, i], states[j],
-                    pi0=pi0, std_dev=std_dev, k=ks[j], mat_err=mat_err, pat_err=pat_err,
-                ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
-            else:
-                m_ij = mat_dosage(mat_haps[:, i], states[j], k=ks[j])
-                p_ij = pat_dosage(pat_haps[:, i], states[j], k=ks[j])
-                emit[j, i] = emission_baf(
-                    bafs[i], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j],
-                ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
+    emit = build_emission_matrix(
+        bafs, lrrs, sigmas, mat_haps, pat_haps, states,
+        pi0=pi0, std_dev=std_dev, mat_err=mat_err, pat_err=pat_err,
+    )
     betas = np.zeros(shape=(m, n))
     betas[:, -1] = log(1)
     scaler = np.zeros(n)
@@ -705,23 +712,11 @@ def viterbi_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes
     cdef float di
     n = bafs.size
     m = len(states)
-    ks = [sum([s >= 0 for s in state]) for state in states]
     K0, K1 = create_index_arrays(karyotypes)
-    # Precompute full emission matrix (m x n) — independent of HMM recursion
-    emit = np.empty((m, n))
-    for j in range(m):
-        for i in range(n):
-            if mat_err > 0.0 or pat_err > 0.0:
-                emit[j, i] = emission_baf_parent_err(
-                    bafs[i], mat_haps[:, i], pat_haps[:, i], states[j],
-                    pi0=pi0, std_dev=std_dev, k=ks[j], mat_err=mat_err, pat_err=pat_err,
-                ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
-            else:
-                m_ij = mat_dosage(mat_haps[:, i], states[j], k=ks[j])
-                p_ij = pat_dosage(pat_haps[:, i], states[j], k=ks[j])
-                emit[j, i] = emission_baf(
-                    bafs[i], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j],
-                ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i])
+    emit = build_emission_matrix(
+        bafs, lrrs, sigmas, mat_haps, pat_haps, states,
+        pi0=pi0, std_dev=std_dev, mat_err=mat_err, pat_err=pat_err,
+    )
     deltas = np.zeros(shape=(m, n))
     deltas[:, 0] = log(1.0 / m)
     psi = np.zeros(shape=(m, n), dtype=int)
