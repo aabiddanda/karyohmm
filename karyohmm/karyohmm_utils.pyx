@@ -652,17 +652,61 @@ def build_emission_matrix(bafs, lrrs, sigmas, mat_haps, pat_haps, states, double
     return emit
 
 
-def forward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, int unphased=0, double mat_err=0.0, double pat_err=0.0):
-    """Helper function for forward algorithm loop-optimization."""
+def build_emission_matrix_reads(alt_reads, ref_reads, mat_haps, pat_haps, states, depths=None, double eps=1e-2, double coverage=1.0, double mismap_rate=1e-2):
+    """Precompute the (m x n) emission matrix for read-level data.
+
+    Read analogue of build_emission_matrix: emission_reads carries the allelic
+    balance the way emission_baf does, and emission_depth carries the copy
+    number the way emission_lrr does.  The two are conditionally independent
+    given the state -- the binomial is over which allele each read reports and
+    the Poisson over how many reads there are -- so the cell is their sum.
+
+    `depths` defaults to alt_reads + ref_reads, which is the total depth by
+    construction.  It is a separate argument only so a site can be masked with
+    the -9 sentinel, which no (alt, ref) pair can express.  A zero-depth site
+    is *observed* data and strong evidence for nullisomy, so it must never be
+    conflated with a masked one.  Masking is per-channel: -9 drops the depth
+    term alone, and passing (0, 0) reads drops the balance term alone because
+    emission_reads is then exactly 0.0 for every state.  Pass both to mask a
+    site outright.
+
+    Parental genotyping error has no read analogue yet -- there is nothing
+    matching emission_baf_parent_err -- so this helper has no mat_err/pat_err
+    branch and always reads the haplotypes as given.
+    """
+    cdef int i, j, n, m, k
+    n = alt_reads.size
+    m = len(states)
+    ks = [sum([s >= 0 for s in state]) for state in states]
+    if depths is None:
+        depths = np.asarray(alt_reads, dtype=int) + np.asarray(ref_reads, dtype=int)
+    emit = np.empty((m, n))
+    for j in range(m):
+        k = ks[j]
+        for i in range(n):
+            m_ij = mat_dosage(mat_haps[:, i], states[j], k=k)
+            p_ij = pat_dosage(pat_haps[:, i], states[j], k=k)
+            emit[j, i] = emission_reads(
+                alt_reads[i], ref_reads[i], m_ij, p_ij, k=k, eps=eps,
+            ) + emission_depth(
+                depths[i], k=k, coverage=coverage, mismap_rate=mismap_rate,
+            )
+    return emit
+
+
+def forward_recursion(emit, pos, karyotypes, double r=1e-8, double a=1e-2, int unphased=0):
+    """Run the scaled forward recursion over a precomputed emission matrix.
+
+    The recursion sees the data only through `emit`, so the BAF-based and
+    read-based models differ solely in which builder produced that matrix.
+    Sharing one recursion is what keeps the two from drifting apart in the
+    transition model while appearing to run the same HMM.
+    """
     cdef int i, j, n, m
     cdef float di
-    n = bafs.size
-    m = len(states)
+    m = emit.shape[0]
+    n = emit.shape[1]
     K0, K1 = create_index_arrays(karyotypes)
-    emit = build_emission_matrix(
-        bafs, lrrs, sigmas, mat_haps, pat_haps, states,
-        pi0=pi0, std_dev=std_dev, mat_err=mat_err, pat_err=pat_err,
-    )
     alphas = np.zeros(shape=(m, n))
     alphas[:, 0] = log(1.0 / m) + emit[:, 0]
     scaler = np.zeros(n)
@@ -675,20 +719,55 @@ def forward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes
             alphas[j, i] = emit[j, i] + logsumexp(A_hat[:, j] + alphas[:, (i - 1)])
         scaler[i] = logsumexp(alphas[:, i])
         alphas[:, i] -= scaler[i]
-    return alphas, scaler, states, None, sum(scaler)
+    return alphas, scaler
 
 
-def backward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, int unphased=0, double mat_err=0.0, double pat_err=0.0):
-    """Helper function for backward algorithm loop-optimization."""
-    cdef int i, j, n, m
-    cdef float di
-    n = bafs.size
-    m = len(states)
-    K0, K1 = create_index_arrays(karyotypes)
+def forward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, int unphased=0, double mat_err=0.0, double pat_err=0.0):
+    """Helper function for forward algorithm loop-optimization."""
     emit = build_emission_matrix(
         bafs, lrrs, sigmas, mat_haps, pat_haps, states,
         pi0=pi0, std_dev=std_dev, mat_err=mat_err, pat_err=pat_err,
     )
+    alphas, scaler = forward_recursion(emit, pos, karyotypes, r=r, a=a, unphased=unphased)
+    return alphas, scaler, states, None, sum(scaler)
+
+
+def forward_algo_reads(alt_reads, ref_reads, pos, mat_haps, pat_haps, states, karyotypes, depths=None, double r=1e-8, double a=1e-2, double eps=1e-2, double coverage=1.0, double mismap_rate=1e-2, int unphased=0):
+    """Forward algorithm for read-level data under the trio state space.
+
+    Read analogue of forward_algo: same states, same transition model, same
+    scaled recursion -- only the emission matrix differs, so `bafs`, `lrrs`,
+    `sigmas`, `pi0` and `std_dev` give way to the read counts and their
+    (eps, coverage, mismap_rate) parameters.
+
+    The BAF and read channels are never combined: BAF is typically derived
+    from the same reads, so summing the two would count the same data twice.
+    """
+    emit = build_emission_matrix_reads(
+        alt_reads, ref_reads, mat_haps, pat_haps, states, depths=depths,
+        eps=eps, coverage=coverage, mismap_rate=mismap_rate,
+    )
+    alphas, scaler = forward_recursion(emit, pos, karyotypes, r=r, a=a, unphased=unphased)
+    return alphas, scaler, states, None, sum(scaler)
+
+
+def backward_recursion(emit, pos, karyotypes, double r=1e-8, double a=1e-2, int unphased=0):
+    """Run the scaled backward recursion over a precomputed emission matrix.
+
+    Counterpart to forward_recursion, and shared by backward_algo and
+    backward_algo_reads for the same reason: the pair must agree with their
+    forward twin on the model being run, or forward_backward silently stops
+    producing a valid posterior.
+
+    The initial-state prior and the first site's emission are folded in at
+    i == 0, which is what makes sum(scaler) the same total log-likelihood the
+    forward pass reports.
+    """
+    cdef int i, j, n, m
+    cdef float di
+    m = emit.shape[0]
+    n = emit.shape[1]
+    K0, K1 = create_index_arrays(karyotypes)
     betas = np.zeros(shape=(m, n))
     betas[:, -1] = log(1)
     scaler = np.zeros(n)
@@ -698,11 +777,37 @@ def backward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotype
         di = pos[i+1] - pos[i]
         A_hat = transition_kernel(K0, K1, d=di, r=r, a=a, unphased=unphased)
         for j in range(m):
-            betas[j, i] = logsumexp(A_hat[:, j] + emit[:, i + 1] + betas[:, (i + 1)])
+            betas[j, i] = logsumexp(A_hat[j, :] + emit[:, i + 1] + betas[:, (i + 1)])
         if i == 0:
             betas[:, 0] += log(1.0 / m) + emit[:, 0]
         scaler[i] = logsumexp(betas[:, i])
         betas[:, i] -= scaler[i]
+    return betas, scaler
+
+
+def backward_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, int unphased=0, double mat_err=0.0, double pat_err=0.0):
+    """Helper function for backward algorithm loop-optimization."""
+    emit = build_emission_matrix(
+        bafs, lrrs, sigmas, mat_haps, pat_haps, states,
+        pi0=pi0, std_dev=std_dev, mat_err=mat_err, pat_err=pat_err,
+    )
+    betas, scaler = backward_recursion(emit, pos, karyotypes, r=r, a=a, unphased=unphased)
+    return betas, scaler, states, None, sum(scaler)
+
+
+def backward_algo_reads(alt_reads, ref_reads, pos, mat_haps, pat_haps, states, karyotypes, depths=None, double r=1e-8, double a=1e-2, double eps=1e-2, double coverage=1.0, double mismap_rate=1e-2, int unphased=0):
+    """Backward algorithm for read-level data under the trio state space.
+
+    Read analogue of backward_algo, and the exact mirror of forward_algo_reads:
+    both build the same emission matrix from the same arguments, so the two
+    report the same total log-likelihood and their outputs combine into a
+    valid posterior.
+    """
+    emit = build_emission_matrix_reads(
+        alt_reads, ref_reads, mat_haps, pat_haps, states, depths=depths,
+        eps=eps, coverage=coverage, mismap_rate=mismap_rate,
+    )
+    betas, scaler = backward_recursion(emit, pos, karyotypes, r=r, a=a, unphased=unphased)
     return betas, scaler, states, None, sum(scaler)
 
 

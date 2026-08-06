@@ -34,11 +34,13 @@ import numpy as np
 from karyohmm_utils import (
     backward_algo,
     backward_algo_duo,
+    backward_algo_reads,
     backward_algo_sibs,
     emission_baf,
     emission_lrr,
     forward_algo,
     forward_algo_duo,
+    forward_algo_reads,
     forward_algo_sibs,
     forward_mcc_phased_poc,
     forward_mcc_phased_trio,
@@ -504,6 +506,108 @@ class MetaHMM(AneuploidyHMM):
         )
         return alphas, scaler, self.states, self.karyotypes, loglik
 
+    def forward_algorithm_reads(
+        self,
+        alt_reads,
+        ref_reads,
+        pos,
+        mat_haps,
+        pat_haps,
+        depths=None,
+        eps=1e-2,
+        coverage=1.0,
+        mismap_rate=1e-2,
+        r=1e-8,
+        a=1e-2,
+        unphased=False,
+    ):
+        """Forward HMM algorithm for read-level (sequencing) data.
+
+        Read-based counterpart of :meth:`forward_algorithm`: the state space and
+        transition model are identical, and only the emission changes.  Allelic
+        balance takes the role of the BAF emission and total depth the role of
+        the LRR emission.  The two data types are never mixed -- BAF is usually
+        derived from the same reads, so combining them double-counts the data.
+
+        Parameters
+        ----------
+        alt_reads : np.ndarray
+            m-length array of alternate-allele read counts.
+        ref_reads : np.ndarray
+            m-length array of reference-allele read counts.
+        pos : np.ndarray
+            m-length vector of basepair positions for sites.
+        mat_haps : np.ndarray
+            A 2 x m array of 0/1 maternal haplotypes.
+        pat_haps : np.ndarray
+            A 2 x m array of 0/1 paternal haplotypes.
+        depths : np.ndarray, optional
+            m-length array of total read depths, defaulting to
+            ``alt_reads + ref_reads``.  Supply it to mask sites with the -9
+            sentinel, which no (alt, ref) pair can express.  A zero-depth site
+            is observed data and evidence for nullisomy, not a missing one.
+        eps : float
+            Per-read sequencing error rate.
+        coverage : float
+            Mean read depth at a disomic site.
+        mismap_rate : float
+            Background depth from mismapped reads, in copy-number units.
+        r : float
+            Intra-karyotype transition rate (recombination).
+        a : float
+            Inter-karyotype transition rate.
+        unphased : bool
+            Run the model in unphased mode.
+
+        Returns
+        -------
+        alphas : np.ndarray
+            Forward variable from HMM across k states.
+        scaler : np.ndarray
+            m-length array of scale parameters.
+        states : list
+            Tuple representation of states.
+        karyotypes : np.ndarray
+            Array of karyotypes in the MetaHMM model.
+        loglik : float
+            Total log-likelihood of the read counts.
+
+        """
+        assert alt_reads.ndim == 1
+        assert ref_reads.ndim == 1
+        assert alt_reads.size == ref_reads.size
+        assert pos.ndim == 1
+        assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
+        assert alt_reads.size == mat_haps.shape[1]
+        assert alt_reads.size == pos.size
+        assert mat_haps.shape == pat_haps.shape
+        assert np.all(pos[1:] > pos[:-1])
+        assert r < 0.5 and r > 0
+        assert a < 0.5 and a > 0
+        assert (eps > 0) & (eps <= 0.5)
+        assert coverage > 0
+        assert mismap_rate >= 0
+        if depths is not None:
+            assert depths.ndim == 1
+            assert depths.size == alt_reads.size
+        alphas, scaler, _, _, loglik = forward_algo_reads(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            self.states,
+            self.karyotypes,
+            depths=depths,
+            r=r,
+            a=a,
+            eps=eps,
+            coverage=coverage,
+            mismap_rate=mismap_rate,
+            unphased=int(unphased),
+        )
+        return alphas, scaler, self.states, self.karyotypes, loglik
+
     def backward_algorithm(
         self,
         bafs,
@@ -598,6 +702,106 @@ class MetaHMM(AneuploidyHMM):
             unphased=int(unphased),
             mat_err=mat_err,
             pat_err=pat_err,
+        )
+        return betas, scaler, self.states, self.karyotypes, loglik
+
+    def backward_algorithm_reads(
+        self,
+        alt_reads,
+        ref_reads,
+        pos,
+        mat_haps,
+        pat_haps,
+        depths=None,
+        eps=1e-2,
+        coverage=1.0,
+        mismap_rate=1e-2,
+        r=1e-8,
+        a=1e-2,
+        unphased=False,
+    ):
+        """Backward HMM algorithm for read-level (sequencing) data.
+
+        Mirror of :meth:`forward_algorithm_reads` -- same arguments, same
+        emission model -- so the two report the same total log-likelihood and
+        their outputs combine into a valid posterior.
+
+        Parameters
+        ----------
+        alt_reads : np.ndarray
+            m-length array of alternate-allele read counts.
+        ref_reads : np.ndarray
+            m-length array of reference-allele read counts.
+        pos : np.ndarray
+            m-length vector of basepair positions for sites.
+        mat_haps : np.ndarray
+            A 2 x m array of 0/1 maternal haplotypes.
+        pat_haps : np.ndarray
+            A 2 x m array of 0/1 paternal haplotypes.
+        depths : np.ndarray, optional
+            m-length array of total read depths, defaulting to
+            ``alt_reads + ref_reads``.  Supply it to mask sites with the -9
+            sentinel, which no (alt, ref) pair can express.  A zero-depth site
+            is observed data and evidence for nullisomy, not a missing one.
+        eps : float
+            Per-read sequencing error rate.
+        coverage : float
+            Mean read depth at a disomic site.
+        mismap_rate : float
+            Background depth from mismapped reads, in copy-number units.
+        r : float
+            Intra-karyotype transition rate (recombination).
+        a : float
+            Inter-karyotype transition rate.
+        unphased : bool
+            Run the model in unphased mode.
+
+        Returns
+        -------
+        betas : np.ndarray
+            Backward variable from HMM across k states.
+        scaler : np.ndarray
+            m-length array of scale parameters.
+        states : list
+            Tuple representation of states.
+        karyotypes : np.ndarray
+            Array of karyotypes in the MetaHMM model.
+        loglik : float
+            Total log-likelihood of the read counts.
+
+        """
+        assert alt_reads.ndim == 1
+        assert ref_reads.ndim == 1
+        assert alt_reads.size == ref_reads.size
+        assert pos.ndim == 1
+        assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
+        assert alt_reads.size == mat_haps.shape[1]
+        assert alt_reads.size == pos.size
+        assert mat_haps.shape == pat_haps.shape
+        assert np.all(pos[1:] > pos[:-1])
+        assert r < 0.5 and r > 0
+        assert a < 0.5 and a > 0
+        assert (eps > 0) & (eps <= 0.5)
+        assert coverage > 0
+        assert mismap_rate >= 0
+        if depths is not None:
+            assert depths.ndim == 1
+            assert depths.size == alt_reads.size
+        betas, scaler, _, _, loglik = backward_algo_reads(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            self.states,
+            self.karyotypes,
+            depths=depths,
+            r=r,
+            a=a,
+            eps=eps,
+            coverage=coverage,
+            mismap_rate=mismap_rate,
+            unphased=int(unphased),
         )
         return betas, scaler, self.states, self.karyotypes, loglik
 

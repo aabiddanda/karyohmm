@@ -3,8 +3,12 @@
 import numpy as np
 import pytest
 from karyohmm_utils import (
+    backward_algo_reads,
+    backward_recursion,
     build_emission_matrix,
+    build_emission_matrix_reads,
     create_index_arrays,
+    forward_algo_reads,
     transition_kernel,
 )
 from scipy.special import logsumexp as logsumexp_sp
@@ -230,6 +234,300 @@ def test_build_emission_matrix_shape_and_finiteness(mat_err, pat_err):
     )
     assert emit.shape == (len(hmm.states), data["baf"].size)
     assert np.all(np.isfinite(emit))
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+def test_build_emission_matrix_reads_favors_true_ploidy(ploidy):
+    """The read-level emission matrix is finite and peaks at the true ploidy.
+
+    rec_rate is set low enough that the true path holds a single state across
+    the chromosome, which is what makes summing a fixed state's emissions over
+    all sites a valid comparison in the absence of the transition model.
+    """
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(
+        m=1000, ploidy=ploidy, reads=True, coverage=10.0, rec_rate=1e-10, seed=42
+    )
+    emit = build_emission_matrix_reads(
+        data["alt_reads"],
+        data["ref_reads"],
+        data["mat_haps"],
+        data["pat_haps"],
+        hmm.states,
+        eps=1e-2,
+        coverage=10.0,
+        mismap_rate=1e-2,
+    )
+    assert emit.shape == (len(hmm.states), data["alt_reads"].size)
+    assert np.all(np.isfinite(emit))
+    ks = np.array([sum(s >= 0 for s in state) for state in hmm.states])
+    assert ks[np.argmax(emit.sum(axis=1))] == ploidy
+
+
+def test_build_emission_matrix_reads_masking():
+    """Depth masking is per-channel and confined to the site it is applied to."""
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(m=200, ploidy=2, reads=True, coverage=10.0, seed=42)
+    alt, ref = data["alt_reads"], data["ref_reads"]
+    kwargs = dict(
+        mat_haps=data["mat_haps"],
+        pat_haps=data["pat_haps"],
+        states=hmm.states,
+        coverage=10.0,
+    )
+    depths = np.asarray(alt, dtype=int) + np.asarray(ref, dtype=int)
+    emit = build_emission_matrix_reads(alt, ref, **kwargs)
+    # Passing the implied depths explicitly must change nothing.
+    assert np.array_equal(emit, build_emission_matrix_reads(alt, ref, depths=depths, **kwargs))
+    depths[0] = -9
+    masked = build_emission_matrix_reads(alt, ref, depths=depths, **kwargs)
+    # -9 drops the depth term alone, so the site still discriminates states ...
+    assert masked[:, 0].std() > 0.0
+    assert np.array_equal(masked[:, 1:], emit[:, 1:])
+    # ... and zeroing the reads as well drops the site entirely.
+    alt0, ref0 = alt.copy(), ref.copy()
+    alt0[0], ref0[0] = 0, 0
+    full_mask = build_emission_matrix_reads(alt0, ref0, depths=depths, **kwargs)
+    assert np.allclose(full_mask[:, 0], -1.0)
+
+
+def ref_forward(emit, pos, karyotypes, r=1e-8, a=1e-2, unphased=0):
+    """Forward recursion written unlike the engine: linear space, matrix product.
+
+    The column maximum is factored out for stability. The engine holds the
+    inter-site distance in a C float, so the distance is rounded to single
+    precision here -- without that the two agree only to ~1e-8.
+    """
+    m, n = emit.shape
+    K0, K1 = create_index_arrays(karyotypes)
+    c = emit[:, 0].max()
+    unnorm = np.exp(emit[:, 0] - c) / m
+    scale = unnorm.sum()
+    loglik = c + np.log(scale)
+    alpha = unnorm / scale
+    alphas = np.zeros((m, n))
+    alphas[:, 0] = alpha
+    for i in range(1, n):
+        di = np.float32(pos[i] - pos[i - 1])
+        A = np.exp(transition_kernel(K0, K1, d=di, r=r, a=a, unphased=unphased))
+        c = emit[:, i].max()
+        unnorm = np.exp(emit[:, i] - c) * (A.T @ alpha)
+        scale = unnorm.sum()
+        loglik += c + np.log(scale)
+        alpha = unnorm / scale
+        alphas[:, i] = alpha
+    return alphas, loglik
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+@pytest.mark.parametrize("disomy,unphased", [(False, 0), (False, 1), (True, 0)])
+def test_forward_algo_reads_vs_reference(ploidy, disomy, unphased):
+    """The read-based forward pass matches an independently written recursion."""
+    hmm = MetaHMM(disomy=disomy)
+    data = pgt_sim.full_ploidy_sim(m=300, ploidy=ploidy, reads=True, coverage=10.0, seed=42)
+    kwargs = dict(eps=1e-2, coverage=10.0, mismap_rate=1e-2)
+    alphas, scaler, _, _, loglik = forward_algo_reads(
+        data["alt_reads"],
+        data["ref_reads"],
+        data["pos"],
+        data["mat_haps"],
+        data["pat_haps"],
+        hmm.states,
+        hmm.karyotypes,
+        unphased=unphased,
+        **kwargs,
+    )
+    emit = build_emission_matrix_reads(
+        data["alt_reads"],
+        data["ref_reads"],
+        data["mat_haps"],
+        data["pat_haps"],
+        hmm.states,
+        **kwargs,
+    )
+    ref_alphas, ref_loglik = ref_forward(
+        emit, data["pos"], hmm.karyotypes, unphased=unphased
+    )
+    assert np.isclose(loglik, sum(scaler))
+    assert np.all(np.isclose(np.sum(np.exp(alphas), axis=0), 1.0))
+    assert np.isclose(loglik, ref_loglik, atol=1e-6)
+    assert np.allclose(np.exp(alphas), ref_alphas, atol=1e-10)
+
+
+def ref_backward(emit, pos, karyotypes, r=1e-8, a=1e-2, unphased=0):
+    """Backward recursion written unlike the engine: linear space, matrix product.
+
+    The transition is applied as ``A @ v``: beta_i(j) sums over where j can go,
+    so it needs row j of the kernel.  That distinction is not cosmetic here --
+    transition_kernel is asymmetric, because create_index_arrays normalises the
+    inter-karyotype entry by the *source* class size, K1[i, j] = 1/(m - ks[i]),
+    making the 0 -> 3m rate 1/20 against 1/15 the other way.
+    """
+    m, n = emit.shape
+    K0, K1 = create_index_arrays(karyotypes)
+    beta = np.ones(m)
+    logscale = 0.0
+    betas = np.zeros((m, n))
+    betas[:, -1] = beta / beta.sum()
+    for i in range(n - 2, -1, -1):
+        di = np.float32(pos[i + 1] - pos[i])
+        A = np.exp(transition_kernel(K0, K1, d=di, r=r, a=a, unphased=unphased))
+        c = emit[:, i + 1].max()
+        beta = A @ (np.exp(emit[:, i + 1] - c) * beta)
+        scale = beta.sum()
+        beta /= scale
+        logscale += c + np.log(scale)
+        betas[:, i] = beta
+    c = emit[:, 0].max()
+    loglik = logscale - np.log(m) + c + np.log((np.exp(emit[:, 0] - c) * beta).sum())
+    return betas, loglik
+
+
+@pytest.mark.parametrize("upd", [False, True])
+def test_backward_recursion_conserves_mass(upd):
+    """With nothing to learn from the data, the backward pass must stay uniform.
+
+    Under a flat emission matrix beta_i(j) = sum_k A[j,k] * const = const,
+    because each row of the kernel sums to 1 exactly.  Indexing the column
+    instead breaks this: transition_kernel is asymmetric, so its columns sum to
+    1 only to ~5e-7 and the recursion leaks mass at every site.  This pins the
+    row-vs-column choice without reference to any data.
+    """
+    hmm = MetaHMM(upd=upd)
+    pos = np.arange(1, 401) * 25000.0
+    flat = np.zeros((len(hmm.states), pos.size))
+    betas, _ = backward_recursion(flat, pos, hmm.karyotypes)
+    # Site 0 additionally carries the prior and its own emission.
+    assert np.allclose(np.exp(betas[:, :-1]), 1.0 / len(hmm.states), atol=1e-12)
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+@pytest.mark.parametrize("disomy,unphased", [(False, 0), (False, 1), (True, 0)])
+def test_backward_algo_reads_vs_reference(ploidy, disomy, unphased):
+    """The read-based backward pass matches an independently written recursion."""
+    hmm = MetaHMM(disomy=disomy)
+    data = pgt_sim.full_ploidy_sim(m=300, ploidy=ploidy, reads=True, coverage=10.0, seed=42)
+    kwargs = dict(eps=1e-2, coverage=10.0, mismap_rate=1e-2)
+    betas, scaler, _, _, loglik = backward_algo_reads(
+        data["alt_reads"],
+        data["ref_reads"],
+        data["pos"],
+        data["mat_haps"],
+        data["pat_haps"],
+        hmm.states,
+        hmm.karyotypes,
+        unphased=unphased,
+        **kwargs,
+    )
+    emit = build_emission_matrix_reads(
+        data["alt_reads"],
+        data["ref_reads"],
+        data["mat_haps"],
+        data["pat_haps"],
+        hmm.states,
+        **kwargs,
+    )
+    ref_betas, ref_loglik = ref_backward(
+        emit, data["pos"], hmm.karyotypes, unphased=unphased
+    )
+    assert np.isclose(loglik, sum(scaler))
+    assert np.isclose(loglik, ref_loglik, atol=1e-6)
+    # Site 0 carries the prior and its own emission, so only 1: is a pure beta.
+    assert np.allclose(np.exp(betas[:, 1:]), ref_betas[:, 1:], atol=1e-10)
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+@pytest.mark.parametrize("unphased", [0, 1])
+def test_forward_vs_backward_loglik_reads(ploidy, unphased):
+    """The read-based forward and backward passes must agree on the loglik.
+
+    They share build_emission_matrix_reads, so a mismatch means the two have
+    drifted apart and any forward-backward posterior would be invalid.
+    """
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(m=500, ploidy=ploidy, reads=True, coverage=10.0, seed=42)
+    kwargs = dict(
+        alt_reads=data["alt_reads"],
+        ref_reads=data["ref_reads"],
+        pos=data["pos"],
+        mat_haps=data["mat_haps"],
+        pat_haps=data["pat_haps"],
+        eps=1e-2,
+        coverage=10.0,
+        mismap_rate=1e-2,
+        unphased=bool(unphased),
+    )
+    _, _, _, _, fwd_loglik = hmm.forward_algorithm_reads(**kwargs)
+    _, _, _, _, bwd_loglik = hmm.backward_algorithm_reads(**kwargs)
+    assert np.isclose(fwd_loglik, bwd_loglik, atol=1e-6)
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+def test_forward_backward_reads_ploidy_correctness(ploidy):
+    """Combining the two read-based passes gives a valid posterior on the truth.
+
+    See test_forward_algorithm_reads_ploidy_correctness on why rec_rate is set
+    to the model's own r here.
+    """
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(
+        m=1000, ploidy=ploidy, reads=True, coverage=10.0, rec_rate=1e-8, seed=42
+    )
+    kwargs = dict(
+        alt_reads=data["alt_reads"],
+        ref_reads=data["ref_reads"],
+        pos=data["pos"],
+        mat_haps=data["mat_haps"],
+        pat_haps=data["pat_haps"],
+        eps=1e-2,
+        coverage=10.0,
+        mismap_rate=1e-2,
+    )
+    alphas, _, _, karyotypes, _ = hmm.forward_algorithm_reads(**kwargs)
+    betas, _, _, _, _ = hmm.backward_algorithm_reads(**kwargs)
+    gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
+    assert np.all(np.isclose(np.sum(np.exp(gammas), axis=0), 1.0))
+    post = hmm.posterior_karyotypes(gammas, karyotypes)
+    assert max(post, key=post.get) == data["aploid"]
+    assert post[data["aploid"]] > 0.95
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+def test_forward_algorithm_reads_ploidy_correctness(ploidy):
+    """Read-level inference recovers the simulated karyotype.
+
+    Forward-only, so the statistic is the filtered posterior averaged over
+    sites -- the same time-average posterior_karyotypes takes over gammas.
+
+    rec_rate is set to the model's own r rather than the simulator default of
+    1e-4, which over ~10kb site spacing switches the transmitted haplotype at
+    nearly every site.  The read emission is far sharper than the BAF one at
+    this coverage, so it pays a correspondingly larger penalty for a haplotype
+    the frozen disomy states cannot follow, and buys the fit back with a BPH
+    trisomy state that carries both homologs.
+    """
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(
+        m=1000, ploidy=ploidy, reads=True, coverage=10.0, rec_rate=1e-8, seed=42
+    )
+    alphas, _, _, karyotypes, _ = hmm.forward_algorithm_reads(
+        alt_reads=data["alt_reads"],
+        ref_reads=data["ref_reads"],
+        pos=data["pos"],
+        mat_haps=data["mat_haps"],
+        pat_haps=data["pat_haps"],
+        eps=1e-2,
+        coverage=10.0,
+        mismap_rate=1e-2,
+    )
+    filt = np.exp(alphas)
+    assert np.all(np.isclose(filt.sum(axis=0), 1.0))
+    post = {
+        k: filt[karyotypes == k, :].sum() / filt.shape[1]
+        for k in np.unique(karyotypes)
+    }
+    assert max(post, key=post.get) == data["aploid"]
+    assert post[data["aploid"]] > 0.95
 
 
 @pytest.mark.parametrize("data", [data_disomy, data_trisomy, data_monosomy])
