@@ -1105,7 +1105,7 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
 def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, bint maternal=True, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, double obs_err=0.0):
     """Helper function for backward algorithm loop-optimization."""
     cdef int i, j, idx, n, m
-    cdef float di, f, p
+    cdef float di, f
     cdef int obs_h0, obs_h1
     n = bafs.size
     m = len(states)
@@ -1118,7 +1118,9 @@ def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, 
     betas[:, -1] -= scaler[-1]
     geno = [[0, 0], [1, 0], [1, 1]]
     for i in range(n - 2, -1, -1):
-        f = freqs[i]
+        # The emission built in this iteration is site i+1's, so the unobserved
+        # parent must be marginalised under site i+1's allele frequency.
+        f = freqs[i+1]
         if f < 0:
             geno_freq = (1/3, 1/3, 1/3)
         else:
