@@ -278,7 +278,9 @@ def test_build_emission_matrix_reads_masking():
     depths = np.asarray(alt, dtype=int) + np.asarray(ref, dtype=int)
     emit = build_emission_matrix_reads(alt, ref, **kwargs)
     # Passing the implied depths explicitly must change nothing.
-    assert np.array_equal(emit, build_emission_matrix_reads(alt, ref, depths=depths, **kwargs))
+    assert np.array_equal(
+        emit, build_emission_matrix_reads(alt, ref, depths=depths, **kwargs)
+    )
     depths[0] = -9
     masked = build_emission_matrix_reads(alt, ref, depths=depths, **kwargs)
     # -9 drops the depth term alone, so the site still discriminates states ...
@@ -324,7 +326,9 @@ def ref_forward(emit, pos, karyotypes, r=1e-8, a=1e-2, unphased=0):
 def test_forward_algo_reads_vs_reference(ploidy, disomy, unphased):
     """The read-based forward pass matches an independently written recursion."""
     hmm = MetaHMM(disomy=disomy)
-    data = pgt_sim.full_ploidy_sim(m=300, ploidy=ploidy, reads=True, coverage=10.0, seed=42)
+    data = pgt_sim.full_ploidy_sim(
+        m=300, ploidy=ploidy, reads=True, coverage=10.0, seed=42
+    )
     kwargs = dict(eps=1e-2, coverage=10.0, mismap_rate=1e-2)
     alphas, scaler, _, _, loglik = forward_algo_reads(
         data["alt_reads"],
@@ -406,7 +410,9 @@ def test_backward_recursion_conserves_mass(upd):
 def test_backward_algo_reads_vs_reference(ploidy, disomy, unphased):
     """The read-based backward pass matches an independently written recursion."""
     hmm = MetaHMM(disomy=disomy)
-    data = pgt_sim.full_ploidy_sim(m=300, ploidy=ploidy, reads=True, coverage=10.0, seed=42)
+    data = pgt_sim.full_ploidy_sim(
+        m=300, ploidy=ploidy, reads=True, coverage=10.0, seed=42
+    )
     kwargs = dict(eps=1e-2, coverage=10.0, mismap_rate=1e-2)
     betas, scaler, _, _, loglik = backward_algo_reads(
         data["alt_reads"],
@@ -445,7 +451,9 @@ def test_forward_vs_backward_loglik_reads(ploidy, unphased):
     drifted apart and any forward-backward posterior would be invalid.
     """
     hmm = MetaHMM()
-    data = pgt_sim.full_ploidy_sim(m=500, ploidy=ploidy, reads=True, coverage=10.0, seed=42)
+    data = pgt_sim.full_ploidy_sim(
+        m=500, ploidy=ploidy, reads=True, coverage=10.0, seed=42
+    )
     kwargs = dict(
         alt_reads=data["alt_reads"],
         ref_reads=data["ref_reads"],
@@ -523,8 +531,7 @@ def test_forward_algorithm_reads_ploidy_correctness(ploidy):
     filt = np.exp(alphas)
     assert np.all(np.isclose(filt.sum(axis=0), 1.0))
     post = {
-        k: filt[karyotypes == k, :].sum() / filt.shape[1]
-        for k in np.unique(karyotypes)
+        k: filt[karyotypes == k, :].sum() / filt.shape[1] for k in np.unique(karyotypes)
     }
     assert max(post, key=post.get) == data["aploid"]
     assert post[data["aploid"]] > 0.95
