@@ -928,7 +928,7 @@ def backward_algo_sibs(bafs, pos, mat_haps, pat_haps, states, karyotypes, double
         di = min(pos[i+1] - pos[i], 1e6)
         A_hat = transition_kernel(K0, K1, d=di, r=r, a=a)
         for j in range(m):
-            betas[j, i] = logsumexp(A_hat[:, j] + emit[:, i + 1] + betas[:, (i + 1)])
+            betas[j, i] = logsumexp(A_hat[j, :] + emit[:, i + 1] + betas[:, (i + 1)])
         if i == 0:
             betas[:, 0] += log(1.0 / m) + emit[:, 0]
         scaler[i] = logsumexp(betas[:, i])
@@ -1168,7 +1168,7 @@ def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, 
                         ) + emission_lrr(lrrs[i+1], k=ks[j], std_dev=sigmas[i+1]) + log(p)
                 cur_emissions[j] = logsumexp(cur_emission)
         for j in range(m):
-            betas[j, i] = logsumexp(A_hat[:, j] + cur_emissions + betas[:, (i + 1)])
+            betas[j, i] = logsumexp(A_hat[j, :] + cur_emissions + betas[:, (i + 1)])
         if i == 0:
             f = freqs[i]
             if f < 0:
