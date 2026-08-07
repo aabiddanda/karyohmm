@@ -52,6 +52,7 @@ from karyohmm_utils import (
     norm_logl,
     pat_dosage,
     viterbi_algo,
+    viterbi_algo_reads,
     viterbi_algo_sibs,
 )
 from scipy.optimize import brentq, minimize
@@ -397,7 +398,7 @@ class MetaHMM(AneuploidyHMM):
                     dtype=str,
                 )
 
-    def _warn_missing_lrr(self, lrrs):
+    def warn_missing_lrr(self, lrrs):
         """Warn when UPD states are active but LRR data is absent."""
         if self.aploid == "meta+upd" and np.all(lrrs == -9.0):
             warnings.warn(
@@ -408,6 +409,43 @@ class MetaHMM(AneuploidyHMM):
                 UserWarning,
                 stacklevel=3,
             )
+
+    def check_read_inputs(
+        self,
+        alt_reads,
+        ref_reads,
+        pos,
+        mat_haps,
+        pat_haps,
+        depths,
+        eps,
+        coverage,
+        mismap_rate,
+        r,
+        a,
+    ):
+        """Validate the arguments shared by the three read-level engines.
+
+        Kept in one place so the forward, backward and Viterbi read engines
+        cannot come to disagree about what constitutes valid input.
+        """
+        assert alt_reads.ndim == 1
+        assert ref_reads.ndim == 1
+        assert alt_reads.size == ref_reads.size
+        assert pos.ndim == 1
+        assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
+        assert alt_reads.size == mat_haps.shape[1]
+        assert alt_reads.size == pos.size
+        assert mat_haps.shape == pat_haps.shape
+        assert np.all(pos[1:] > pos[:-1])
+        assert r < 0.5 and r > 0
+        assert a < 0.5 and a > 0
+        assert (eps > 0) & (eps <= 0.5)
+        assert coverage > 0
+        assert mismap_rate >= 0
+        if depths is not None:
+            assert depths.ndim == 1
+            assert depths.size == alt_reads.size
 
     def forward_algorithm(
         self,
@@ -573,23 +611,19 @@ class MetaHMM(AneuploidyHMM):
             Total log-likelihood of the read counts.
 
         """
-        assert alt_reads.ndim == 1
-        assert ref_reads.ndim == 1
-        assert alt_reads.size == ref_reads.size
-        assert pos.ndim == 1
-        assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
-        assert alt_reads.size == mat_haps.shape[1]
-        assert alt_reads.size == pos.size
-        assert mat_haps.shape == pat_haps.shape
-        assert np.all(pos[1:] > pos[:-1])
-        assert r < 0.5 and r > 0
-        assert a < 0.5 and a > 0
-        assert (eps > 0) & (eps <= 0.5)
-        assert coverage > 0
-        assert mismap_rate >= 0
-        if depths is not None:
-            assert depths.ndim == 1
-            assert depths.size == alt_reads.size
+        self.check_read_inputs(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            depths,
+            eps,
+            coverage,
+            mismap_rate,
+            r,
+            a,
+        )
         alphas, scaler, _, _, loglik = forward_algo_reads(
             alt_reads,
             ref_reads,
@@ -770,23 +804,19 @@ class MetaHMM(AneuploidyHMM):
             Total log-likelihood of the read counts.
 
         """
-        assert alt_reads.ndim == 1
-        assert ref_reads.ndim == 1
-        assert alt_reads.size == ref_reads.size
-        assert pos.ndim == 1
-        assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
-        assert alt_reads.size == mat_haps.shape[1]
-        assert alt_reads.size == pos.size
-        assert mat_haps.shape == pat_haps.shape
-        assert np.all(pos[1:] > pos[:-1])
-        assert r < 0.5 and r > 0
-        assert a < 0.5 and a > 0
-        assert (eps > 0) & (eps <= 0.5)
-        assert coverage > 0
-        assert mismap_rate >= 0
-        if depths is not None:
-            assert depths.ndim == 1
-            assert depths.size == alt_reads.size
+        self.check_read_inputs(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            depths,
+            eps,
+            coverage,
+            mismap_rate,
+            r,
+            a,
+        )
         betas, scaler, _, _, loglik = backward_algo_reads(
             alt_reads,
             ref_reads,
@@ -862,7 +892,7 @@ class MetaHMM(AneuploidyHMM):
             Array of karyotypes in the model.
 
         """
-        self._warn_missing_lrr(lrrs)
+        self.warn_missing_lrr(lrrs)
         alphas, _, states, karyotypes, _ = self.forward_algorithm(
             bafs,
             lrrs,
@@ -893,6 +923,88 @@ class MetaHMM(AneuploidyHMM):
             mat_err=mat_err,
             pat_err=pat_err,
         )
+        gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
+        return gammas, states, karyotypes
+
+    def forward_backward_reads(
+        self,
+        alt_reads,
+        ref_reads,
+        pos,
+        mat_haps,
+        pat_haps,
+        depths=None,
+        eps=1e-2,
+        coverage=1.0,
+        mismap_rate=1e-2,
+        r=1e-8,
+        a=1e-2,
+        unphased=False,
+    ):
+        """Run the forward-backward algorithm on read-level (sequencing) data.
+
+        Read-based counterpart of :meth:`forward_backward`.  The smoothed
+        posterior it returns is the statistic to use for read data: the
+        forward variable alone is filtered, and the read emission is sharp
+        enough that its last column can sit confidently on the wrong state
+        when the assumed recombination rate is misspecified.
+
+        Parameters
+        ----------
+        alt_reads : np.ndarray
+            m-length array of alternate-allele read counts.
+        ref_reads : np.ndarray
+            m-length array of reference-allele read counts.
+        pos : np.ndarray
+            m-length vector of basepair positions for sites.
+        mat_haps : np.ndarray
+            A 2 x m array of 0/1 maternal haplotypes.
+        pat_haps : np.ndarray
+            A 2 x m array of 0/1 paternal haplotypes.
+        depths : np.ndarray, optional
+            m-length array of total read depths, defaulting to
+            ``alt_reads + ref_reads``.  Supply it to mask sites with the -9
+            sentinel, which no (alt, ref) pair can express.  A zero-depth site
+            is observed data and evidence for nullisomy, not a missing one.
+        eps : float
+            Per-read sequencing error rate.
+        coverage : float
+            Mean read depth at a disomic site.
+        mismap_rate : float
+            Background depth from mismapped reads, in copy-number units.
+        r : float
+            Intra-karyotype transition rate (recombination).
+        a : float
+            Inter-karyotype transition rate.
+        unphased : bool
+            Run the model in unphased mode.
+
+        Returns
+        -------
+        gammas : np.ndarray
+            Log posterior density of being in each of k hidden states.
+        states : list
+            Tuple representation of states.
+        karyotypes : np.ndarray
+            Array of karyotypes in the model.
+
+        """
+        kwargs = {
+            "alt_reads": alt_reads,
+            "ref_reads": ref_reads,
+            "pos": pos,
+            "mat_haps": mat_haps,
+            "pat_haps": pat_haps,
+            "depths": depths,
+            "eps": eps,
+            "coverage": coverage,
+            "mismap_rate": mismap_rate,
+            "r": r,
+            "a": a,
+            "unphased": unphased,
+        }
+        alphas, _, states, karyotypes, _ = self.forward_algorithm_reads(**kwargs)
+        betas, _, _, _, _ = self.backward_algorithm_reads(**kwargs)
         gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
         return gammas, states, karyotypes
 
@@ -955,7 +1067,7 @@ class MetaHMM(AneuploidyHMM):
             Storage vector for psi variable.
 
         """
-        self._warn_missing_lrr(lrrs)
+        self.warn_missing_lrr(lrrs)
         assert bafs.ndim == 1
         assert lrrs.ndim == 1
         assert sigmas.ndim == 1
@@ -987,6 +1099,101 @@ class MetaHMM(AneuploidyHMM):
             unphased=int(unphased),
             mat_err=mat_err,
             pat_err=pat_err,
+        )
+        return path, states, deltas, psi
+
+    def viterbi_algorithm_reads(
+        self,
+        alt_reads,
+        ref_reads,
+        pos,
+        mat_haps,
+        pat_haps,
+        depths=None,
+        eps=1e-2,
+        coverage=1.0,
+        mismap_rate=1e-2,
+        r=1e-8,
+        a=1e-2,
+        unphased=False,
+    ):
+        """Viterbi traceback through karyotypic states on read-level data.
+
+        Read-based counterpart of :meth:`viterbi_algorithm`.  Where
+        :meth:`forward_backward_reads` gives the per-site marginal posterior,
+        this gives the single most likely state path, which stays internally
+        consistent across sites.
+
+        Parameters
+        ----------
+        alt_reads : np.ndarray
+            m-length array of alternate-allele read counts.
+        ref_reads : np.ndarray
+            m-length array of reference-allele read counts.
+        pos : np.ndarray
+            m-length vector of basepair positions for sites.
+        mat_haps : np.ndarray
+            A 2 x m array of 0/1 maternal haplotypes.
+        pat_haps : np.ndarray
+            A 2 x m array of 0/1 paternal haplotypes.
+        depths : np.ndarray, optional
+            m-length array of total read depths, defaulting to
+            ``alt_reads + ref_reads``.  Supply it to mask sites with the -9
+            sentinel, which no (alt, ref) pair can express.  A zero-depth site
+            is observed data and evidence for nullisomy, not a missing one.
+        eps : float
+            Per-read sequencing error rate.
+        coverage : float
+            Mean read depth at a disomic site.
+        mismap_rate : float
+            Background depth from mismapped reads, in copy-number units.
+        r : float
+            Intra-karyotype transition rate (recombination).
+        a : float
+            Inter-karyotype transition rate.
+        unphased : bool
+            Run the model in unphased mode.
+
+        Returns
+        -------
+        path : np.ndarray
+            Most likely copying path through k states in the model.
+        states : list
+            Tuple representation of states.
+        deltas : np.ndarray
+            Delta variable (maximum path probability at step m).
+        psi : np.ndarray
+            Storage vector for psi variable.
+
+        """
+        self.check_read_inputs(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            depths,
+            eps,
+            coverage,
+            mismap_rate,
+            r,
+            a,
+        )
+        path, states, deltas, psi = viterbi_algo_reads(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            self.states,
+            self.karyotypes,
+            depths=depths,
+            r=r,
+            a=a,
+            eps=eps,
+            coverage=coverage,
+            mismap_rate=mismap_rate,
+            unphased=int(unphased),
         )
         return path, states, deltas, psi
 
@@ -2635,7 +2842,7 @@ class PocHMM(MetaHMM):
 
         va = np.array(valid_anchors)
 
-        def _af(anchor_site, query_site):
+        def af(anchor_site, query_site):
             return float(hap_matrix[tagged[anchor_site], query_site].mean())
 
         freqs = np.empty(m)
@@ -2645,20 +2852,20 @@ class PocHMM(MetaHMM):
 
             if left < 0:
                 # Before the first anchor: use first anchor's tagged haplotypes
-                freqs[k] = _af(int(va[0]), k)
+                freqs[k] = af(int(va[0]), k)
             elif right >= len(va):
                 # After the last anchor: use last anchor's tagged haplotypes
-                freqs[k] = _af(int(va[-1]), k)
+                freqs[k] = af(int(va[-1]), k)
             elif int(va[left]) == k:
                 # At an anchor site: use direct estimate from tagged haplotypes
-                freqs[k] = _af(k, k)
+                freqs[k] = af(k, k)
             else:
                 # Between two anchors: linear distance-weighted interpolation
                 i, j = int(va[left]), int(va[right])
                 d_ij = float(pos[j] - pos[i])
                 w_i = 1.0 - float(pos[k] - pos[i]) / d_ij
                 w_j = 1.0 - float(pos[j] - pos[k]) / d_ij
-                freqs[k] = w_i * _af(i, k) + w_j * _af(j, k)
+                freqs[k] = w_i * af(i, k) + w_j * af(j, k)
 
         return freqs
 
@@ -4009,15 +4216,15 @@ class MosaicEst:
         self.sigmas = sigmas
         self.mle_cf = None
 
-        self._baf_hets()
-        self._phase_hets(**phase_kwargs)
+        self.baf_hets()
+        self.phase_hets(**phase_kwargs)
         self.create_transition_matrix(switch_err=switch_err, t_rate=t_rate)
 
     # ------------------------------------------------------------------
     # Internal preprocessing
     # ------------------------------------------------------------------
 
-    def _baf_hets(self):
+    def baf_hets(self):
         """Identify expected-heterozygous sites and cache their BAF values."""
         mat_geno = np.sum(self.mat_haps, axis=0)
         pat_geno = np.sum(self.pat_haps, axis=0)
@@ -4030,7 +4237,7 @@ class MosaicEst:
         self.het_bafs = self.bafs[exp_het]
         self.n_het = self.het_bafs.size
 
-    def _phase_hets(self, **kwargs):
+    def phase_hets(self, **kwargs):
         """Phase BAF at expected-het sites via disomy MetaHMM Viterbi.
 
         sign = +1 when the maternal haplotype carries the alt allele, −1
@@ -4452,9 +4659,11 @@ class PhaseCorrect:
         hap_idx2 = np.ones(haps.shape[1], dtype=np.uint16)
         for i in np.arange(m - 1):
             # If majority have the same switch - we swap haplotypes ...
+            # n_mis[i] covers the interval (i, i+1), so the switch sits between
+            # them and site i belongs on the near side: the slice must be i + 1.
             if n_mis[i] > (n_sib / 2):
-                hap_idx1[:i] = 1 - hap_idx1[:i]
-                hap_idx2[:i] = 1 - hap_idx2[:i]
+                hap_idx1[: i + 1] = 1 - hap_idx1[: i + 1]
+                hap_idx2[: i + 1] = 1 - hap_idx2[: i + 1]
         fixed_hap1 = [haps[x, i] for i, x in enumerate(hap_idx1)]
         fixed_hap2 = [haps[x, i] for i, x in enumerate(hap_idx2)]
         fixed_haps = np.vstack([fixed_hap1, fixed_hap2])
