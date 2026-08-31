@@ -54,9 +54,9 @@ from karyohmm_utils import (
     viterbi_algo,
     viterbi_algo_sibs,
 )
-from scipy.optimize import brentq, minimize
+from scipy.optimize import brentq, minimize, minimize_scalar
 from scipy.special import logsumexp as logsumexp_sp
-from scipy.stats import chi2
+from scipy.stats import chi2, truncnorm
 
 
 class AneuploidyHMM:
@@ -187,6 +187,104 @@ class AneuploidyHMM:
         pi0_est = opt_res.x[0]
         sigma_est = opt_res.x[1]
         return pi0_est, sigma_est
+
+    def est_sigma_pi0_baf(
+        self,
+        bafs,
+        mus=(0.0, 1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0),
+        atom_tol=0.0,
+        max_iter=100,
+        tol=1e-6,
+    ):
+        """Estimate sigma and pi0 from B-allele frequencies alone, without the HMM.
+
+        Requires no haplotypes, reference panel, or allele frequencies, and runs
+        roughly twenty times faster than :meth:`est_sigma_pi0`.
+
+        A continuous density places zero probability on an exact point, so B-allele
+        frequencies equal to 0.0 or 1.0 can only be point-mass draws and their
+        frequency is available in closed form.  The remaining sites form a
+        shared-scale truncated-normal mixture over the dosage grid, which spans
+        monosomy, disomy and trisomy so no karyotype is presupposed.  Estimating the
+        point masses separately from the scale is what avoids the sigma/pi0
+        trade-off that biases the likelihood-based estimator when it is handed
+        imperfect allele frequencies.
+
+        Fit by expectation-maximization.  A single-shot optimizer over the same
+        likelihood is not reliable here: it settles on degenerate optima, and
+        without a bound on sigma it diverges on monosomy, which has no
+        heterozygous band to pin the scale.
+
+        Parameters
+        ----------
+        bafs : np.ndarray
+            B-allele frequencies across all m sites.
+        mus : tuple
+            Dosage-grid means for the continuous mixture components.
+        atom_tol : float
+            Tolerance for treating a B-allele frequency as an exact 0/1 point
+            mass.  The default of 0.0 tests exact equality, which suits simulated
+            data; measured arrays need a small window such as 1e-4.
+        max_iter : int
+            Maximum number of EM iterations.
+        tol : float
+            Relative log-likelihood convergence threshold.
+
+        Returns
+        -------
+        pi0_est : float
+            Estimate of sparsity parameter (pi0) for B-allele emission model.
+        sigma_est : float
+            Estimate of noise parameter (sigma) for B-allele emission model.
+
+        Notes
+        -----
+        Sigma is only weakly identifiable above roughly 0.3: a normal truncated to
+        [0, 1] tends toward uniform as the scale grows, so the likelihood flattens
+        and estimates saturate near 0.28 regardless of the true value.  This is a
+        property of the emission model rather than of this estimator.
+
+        """
+        b = np.asarray(bafs, dtype=float)
+        is0 = (b <= atom_tol) if atom_tol > 0 else (b == 0.0)
+        is1 = (b >= 1.0 - atom_tol) if atom_tol > 0 else (b == 1.0)
+        x = b[~(is0 | is1)]
+        if x.size < 10:
+            return np.nan, np.nan
+        a0, a1 = is0.sum() / b.size, is1.sum() / b.size
+        mu = np.asarray(mus, dtype=float)[:, None]
+
+        def logpdf(sigma):
+            return truncnorm.logpdf(
+                x[None, :], (0.0 - mu) / sigma, (1.0 - mu) / sigma, loc=mu, scale=sigma
+            )
+
+        logw = np.full((mu.size, 1), -np.log(mu.size))
+        sigma_est, prev = max(x.std(), 0.02), -np.inf
+        for _ in range(max_iter):
+            comp = logw + logpdf(sigma_est)
+            denom = logsumexp_sp(comp, axis=0)
+            resp = np.exp(comp - denom)
+            w = np.maximum(resp.sum(axis=1), 1e-12)
+            logw = np.log(w / w.sum())[:, None]
+            sigma_est = float(
+                minimize_scalar(
+                    lambda s: -(resp * logpdf(s)).sum(),
+                    bounds=(0.01, 0.6),
+                    method="bounded",
+                ).x
+            )
+            cur = float(denom.sum())
+            if abs(cur - prev) < tol * max(1.0, abs(prev)):
+                break
+            prev = cur
+
+        # pi0 is conditional on the site being homozygous in expectation, so weigh
+        # the point masses only against the mu=0 and mu=1 continuous components.
+        w = np.exp(logw.ravel())
+        hom = a0 + a1 + (1.0 - a0 - a1) * (w[0] + w[-1])
+        pi0_est = (a0 + a1) / hom if hom > 0 else np.nan
+        return float(pi0_est), sigma_est
 
     def full_param_inference(
         self,

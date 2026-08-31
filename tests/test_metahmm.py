@@ -803,3 +803,35 @@ def test_flag_parental_genotype_errors(data):
     # same allele is already the best option, so scores should be finite
     assert np.all(np.isfinite(mat_err))
     assert np.all(np.isfinite(pat_err))
+
+
+@pytest.mark.parametrize("data", [data_disomy, data_trisomy, data_monosomy])
+def test_est_sigma_pi0_baf(data):
+    """Test the HMM-free BAF mixture estimator of sigma and pi0."""
+    hmm = MetaHMM()
+    pi0_est, sigma_est = hmm.est_sigma_pi0_baf(data["baf"])
+    assert (pi0_est > 0) and (pi0_est < 1.0)
+    assert (sigma_est > 0) and (sigma_est < 1.0)
+
+
+@pytest.mark.parametrize(
+    "std_dev,mix_prop", [(0.1, 0.2), (0.1, 0.7), (0.2, 0.4), (0.2, 0.8)]
+)
+def test_est_sigma_pi0_baf_recovery(std_dev, mix_prop):
+    """The BAF mixture estimator should recover both parameters where sigma is identifiable.
+
+    Sigma flattens out above ~0.3 because a normal truncated to [0, 1] tends
+    toward uniform, so recovery is only asserted in the identifiable regime.
+    """
+    data = pgt_sim.full_ploidy_sim(
+        m=2000, ploidy=2, std_dev=std_dev, mix_prop=mix_prop, seed=42
+    )
+    pi0_est, sigma_est = MetaHMM().est_sigma_pi0_baf(data["baf"])
+    assert np.abs(sigma_est - std_dev) < 0.05
+    assert np.abs(pi0_est - mix_prop) < 0.1
+
+
+def test_est_sigma_pi0_baf_degenerate():
+    """Too few non-point-mass sites cannot identify the mixture, so return nan."""
+    pi0_est, sigma_est = MetaHMM().est_sigma_pi0_baf(np.zeros(500))
+    assert np.isnan(pi0_est) and np.isnan(sigma_est)
