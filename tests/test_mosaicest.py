@@ -366,7 +366,7 @@ def test_forward_algo_full_first_site_is_het():
     pat_haps = rng.integers(0, 2, size=(2, m_sites))
     mat_haps[:, 0] = 0
     pat_haps[:, 0] = 1
-    # Ensure enough other het sites exist so _baf_hets doesn't raise
+    # Ensure enough other het sites exist so baf_hets doesn't raise
     for i in range(1, 30):
         mat_haps[:, i] = 0
         pat_haps[:, i] = 1

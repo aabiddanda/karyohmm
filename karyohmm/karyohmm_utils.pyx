@@ -811,19 +811,39 @@ def backward_algo_reads(alt_reads, ref_reads, pos, mat_haps, pat_haps, states, k
     return betas, scaler, states, None, sum(scaler)
 
 
-def viterbi_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, int unphased=0, double mat_err=0.0, double pat_err=0.0):
-    """Cython implementation of the Viterbi algorithm for MLE path estimation through states."""
+def viterbi_recursion(emit, pos, karyotypes, double r=1e-8, double a=1e-2, int unphased=0):
+    """Run the Viterbi recursion and traceback over a precomputed emission matrix.
+
+    Third member of the trio of shared recursions, alongside forward_recursion
+    and backward_recursion, and shared by viterbi_algo and viterbi_algo_reads
+    for the same reason: the data enters only through `emit`, so the BAF and
+    read models must not be able to drift apart in the transition model.
+
+    Site 0 is seeded with the initial-state prior *and* its own emission, which
+    matches what forward_recursion scores and is what makes deltas[:, -1] the
+    log-probability of the best complete path.
+
+    Args:
+        emit (np.ndarray): m x n matrix of per-state, per-site log emissions.
+        pos (np.ndarray): n-length vector of basepair positions.
+        karyotypes (np.ndarray): karyotype label for each of the m states.
+        r (float): intra-karyotype transition rate (recombination).
+        a (float): scale factor on r giving the inter-karyotype rate.
+        unphased (int): run the transition model in unphased mode.
+
+    Output:
+        path (np.ndarray): n-length MAP state path.
+        deltas (np.ndarray): m x n maximum path log-probability per state.
+        psi (np.ndarray): m x n backpointers; psi[j, i] is the best predecessor
+            of state j at site i, and is unused at i = 0.
+    """
     cdef int i, j, n, m
     cdef float di
-    n = bafs.size
-    m = len(states)
+    m = emit.shape[0]
+    n = emit.shape[1]
     K0, K1 = create_index_arrays(karyotypes)
-    emit = build_emission_matrix(
-        bafs, lrrs, sigmas, mat_haps, pat_haps, states,
-        pi0=pi0, std_dev=std_dev, mat_err=mat_err, pat_err=pat_err,
-    )
     deltas = np.zeros(shape=(m, n))
-    deltas[:, 0] = log(1.0 / m)
+    deltas[:, 0] = log(1.0 / m) + emit[:, 0]
     psi = np.zeros(shape=(m, n), dtype=int)
     for i in range(1, n):
         di = pos[i] - pos[i-1]
@@ -835,8 +855,32 @@ def viterbi_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes
     path = np.zeros(n, dtype=int)
     path[-1] = np.argmax(deltas[:, -1]).astype(int)
     for i in range(n - 2, -1, -1):
-        path[i] = psi[path[i + 1], i]
-    path[0] = psi[path[1], 1]
+        path[i] = psi[path[i + 1], i + 1]
+    return path, deltas, psi
+
+
+def viterbi_algo(bafs, lrrs, sigmas, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, int unphased=0, double mat_err=0.0, double pat_err=0.0):
+    """Cython implementation of the Viterbi algorithm for MLE path estimation through states."""
+    emit = build_emission_matrix(
+        bafs, lrrs, sigmas, mat_haps, pat_haps, states,
+        pi0=pi0, std_dev=std_dev, mat_err=mat_err, pat_err=pat_err,
+    )
+    path, deltas, psi = viterbi_recursion(emit, pos, karyotypes, r=r, a=a, unphased=unphased)
+    return path, states, deltas, psi
+
+
+def viterbi_algo_reads(alt_reads, ref_reads, pos, mat_haps, pat_haps, states, karyotypes, depths=None, double r=1e-8, double a=1e-2, double eps=1e-2, double coverage=1.0, double mismap_rate=1e-2, int unphased=0):
+    """Viterbi algorithm for read-level data under the trio state space.
+
+    Read analogue of viterbi_algo, completing the read-based engine set beside
+    forward_algo_reads and backward_algo_reads: same states, same transitions,
+    same recursion, with only the emission matrix differing.
+    """
+    emit = build_emission_matrix_reads(
+        alt_reads, ref_reads, mat_haps, pat_haps, states, depths=depths,
+        eps=eps, coverage=coverage, mismap_rate=mismap_rate,
+    )
+    path, deltas, psi = viterbi_recursion(emit, pos, karyotypes, r=r, a=a, unphased=unphased)
     return path, states, deltas, psi
 
 
