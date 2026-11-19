@@ -983,7 +983,6 @@ def backward_algo_sibs(bafs, pos, mat_haps, pat_haps, states, karyotypes, double
 def viterbi_algo_sibs(bafs, pos, mat_haps, pat_haps, states, karyotypes, double r=1e-8, double a=1e-2, (double, double) pi0=(0.2, 0.2), (double, double) std_dev=(0.1, 0.1), double mat_err=0.0, double pat_err=0.0):
     """Viterbi algorithm and path tracing through sibling embryos."""
     cdef int i, j, n, m
-    cdef float di
     assert len(bafs) == 2
     assert bafs[1].size == bafs[0].size
     n = bafs[0].size
@@ -1012,21 +1011,7 @@ def viterbi_algo_sibs(bafs, pos, mat_haps, pat_haps, states, karyotypes, double 
                 ) + emission_baf(
                     bafs[1][i], m_ij1, p_ij1, pi0=pi0[1], std_dev=std_dev[1], k=2,
                 )
-    deltas = np.zeros(shape=(m, n))
-    deltas[:, 0] = log(1.0 / m)
-    psi = np.zeros(shape=(m, n), dtype=int)
-    for i in range(1, n):
-        di = pos[i] - pos[i-1]
-        A_hat = transition_kernel(K0, K1, d=di, r=r, a=a)
-        for j in range(m):
-            tmp = deltas[:, i - 1] + A_hat[:, j]
-            deltas[j, i] = np.max(tmp) + emit[j, i]
-            psi[j, i] = np.argmax(tmp)
-    path = np.zeros(n, dtype=int)
-    path[-1] = np.argmax(deltas[:, -1]).astype(int)
-    for i in range(n - 2, -1, -1):
-        path[i] = psi[path[i + 1], i]
-    path[0] = psi[path[1], 1]
+    path, deltas, psi = viterbi_recursion(emit, pos, karyotypes, r=r, a=a)
     return path, states, deltas, psi
 
 
