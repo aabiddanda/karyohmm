@@ -671,6 +671,61 @@ class PGTSimBase:
         )
         return true_geno, alt_read_cnt, ref_read_cnt
 
+    def sim_cell_contamination(self, baf, haps, fraction=0.01, ploidy=2, seed=42):
+        """Add parental cell contamination (typically maternal) to an observed BAF.
+
+        Mixes allele copies: a fraction of the cells are the parent's, with two
+        copies, and the rest are embryo cells with `ploidy` copies. This mixes an
+        already-noisy BAF, so it also shrinks the noise; `full_ploidy_sim` and
+        `full_segmental_sim` take `mcc` to add noise after mixing instead.
+
+        Args:
+            baf (`np.array`): m-length embryo B-allele frequency
+            haps (`np.array`): 2 x m haplotypes of the contaminating parent
+            fraction (`float`): fraction of parental cells in the sample
+            ploidy (`int` or `np.array`): embryo copy number, per site if an array
+            seed (`int`): random seed
+
+        Output:
+            cc_baf (`np.array`): m-length B-allele frequency of the mixture
+
+        """
+        assert fraction >= 0.0
+        assert fraction < 1.0
+        assert baf.ndim == 1
+        assert haps.ndim == 2
+        assert baf.size == haps.shape[1]
+        assert seed > 0
+        np.random.seed(seed)
+        if fraction == 0.0:
+            return baf.copy()
+        k = np.broadcast_to(np.asarray(ploidy, dtype=float), baf.shape)
+        assert np.all((k >= 0) & (k <= 3))
+        # Embryo B-allele copies (none at nullisomy) plus the parent's.
+        embryo = np.where(k > 0, k * baf, 0.0)
+        parent = np.sum(haps, axis=0)
+        return ((1.0 - fraction) * embryo + fraction * parent) / (
+            (1.0 - fraction) * k + 2.0 * fraction
+        )
+
+    def sim_cell_contamination_lrr(self, lrr, fraction=0.01):
+        """Add diploid parental cell contamination to an observed log-R ratio.
+
+        Mixes copy ratios, so LRR = log2(k / 2) becomes
+        log2(((1 - fraction) * k + 2 * fraction) / 2).
+
+        Args:
+            lrr (`np.array`): m-length embryo log-R ratio
+            fraction (`float`): fraction of parental cells in the sample
+
+        Output:
+            cc_lrr (`np.array`): m-length log-R ratio of the mixture
+
+        """
+        assert fraction >= 0.0
+        assert fraction < 1.0
+        return np.log2((1.0 - fraction) * np.exp2(lrr) + fraction)
+
     def sim_joint_het(self, switch=False, nsibs=1, meta_seed=42, **kwargs):
         """Simulate a joint heterozygote and potential switch error."""
         assert nsibs > 0
@@ -1085,61 +1140,6 @@ class PGTSim(PGTSimBase):
             "seed": seed,
         }
         return res_table
-
-    def sim_cell_contamination(self, baf, haps, fraction=0.01, ploidy=2, seed=42):
-        """Add parental cell contamination (typically maternal) to an observed BAF.
-
-        Mixes allele copies: a fraction of the cells are the parent's, with two
-        copies, and the rest are embryo cells with `ploidy` copies. This mixes an
-        already-noisy BAF, so it also shrinks the noise; `full_ploidy_sim` and
-        `full_segmental_sim` take `mcc` to add noise after mixing instead.
-
-        Args:
-            baf (`np.array`): m-length embryo B-allele frequency
-            haps (`np.array`): 2 x m haplotypes of the contaminating parent
-            fraction (`float`): fraction of parental cells in the sample
-            ploidy (`int` or `np.array`): embryo copy number, per site if an array
-            seed (`int`): random seed
-
-        Output:
-            cc_baf (`np.array`): m-length B-allele frequency of the mixture
-
-        """
-        assert fraction >= 0.0
-        assert fraction < 1.0
-        assert baf.ndim == 1
-        assert haps.ndim == 2
-        assert baf.size == haps.shape[1]
-        assert seed > 0
-        np.random.seed(seed)
-        if fraction == 0.0:
-            return baf.copy()
-        k = np.broadcast_to(np.asarray(ploidy, dtype=float), baf.shape)
-        assert np.all((k >= 0) & (k <= 3))
-        # Embryo B-allele copies (none at nullisomy) plus the parent's.
-        embryo = np.where(k > 0, k * baf, 0.0)
-        parent = np.sum(haps, axis=0)
-        return ((1.0 - fraction) * embryo + fraction * parent) / (
-            (1.0 - fraction) * k + 2.0 * fraction
-        )
-
-    def sim_cell_contamination_lrr(self, lrr, fraction=0.01):
-        """Add diploid parental cell contamination to an observed log-R ratio.
-
-        Mixes copy ratios, so LRR = log2(k / 2) becomes
-        log2(((1 - fraction) * k + 2 * fraction) / 2).
-
-        Args:
-            lrr (`np.array`): m-length embryo log-R ratio
-            fraction (`float`): fraction of parental cells in the sample
-
-        Output:
-            cc_lrr (`np.array`): m-length log-R ratio of the mixture
-
-        """
-        assert fraction >= 0.0
-        assert fraction < 1.0
-        return np.log2((1.0 - fraction) * np.exp2(lrr) + fraction)
 
 
 class PGTSimMosaic(PGTSimBase):

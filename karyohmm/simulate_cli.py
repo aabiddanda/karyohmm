@@ -384,9 +384,9 @@ def main(
 
     else:
         # Append a chromosome name to the input
-        results["chrom"] = np.repeat(f"{chrom}", m, dtype=str)
-        results["ref"] = np.repeat("A", m, dtype=str)
-        results["alt"] = np.repeat("C", m, dtype=str)
+        results["chrom"] = np.full(m, f"{chrom}")
+        results["ref"] = np.full(m, "A")
+        results["alt"] = np.full(m, "C")
         logging.info("Writing output in NPZ format ...")
         out_fp = f"{out}.npz"
         logging.info(f"Writing output to {out}.npz ...")
