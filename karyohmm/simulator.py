@@ -435,22 +435,76 @@ class PGTSimBase:
             aploid = "2m1"
         return zs_maternal, zs_paternal, mat_real_hap, pat_real_hap, aploid
 
+    def mcc_baf_mean(self, geno, ploidy, mat_geno, mcc):
+        """Expected B-allele frequency of an embryo sample with maternal cell contamination.
+
+        Mixes allele copies rather than BAFs: a fraction mcc of the cells are
+        maternal with two copies, and the rest are embryo cells with `ploidy`
+        copies.
+
+        Args:
+            geno (`float`): embryo B-allele dosage (ignored when ploidy is 0)
+            ploidy (`int`): embryo copy number
+            mat_geno (`float`): maternal B-allele dosage in {0, 1, 2}
+            mcc (`float`): fraction of maternal cells in the sample
+
+        Output:
+            mu (`float`): expected B-allele frequency of the mixture
+
+        """
+        d = 0.0 if ploidy == 0 else geno
+        return ((1.0 - mcc) * d + mcc * mat_geno) / ((1.0 - mcc) * ploidy + 2.0 * mcc)
+
+    def mcc_lrr_mean(self, ploidy, mcc):
+        """Expected log-R ratio of an embryo sample with maternal cell contamination.
+
+        The log2 copy ratio of the mixture against a diploid reference, floored at
+        the nullisomy mean.
+
+        Args:
+            ploidy (`int` or `np.array`): embryo copy number, per site if an array
+            mcc (`float`): fraction of maternal cells in the sample, above 0
+
+        Output:
+            mu (`float` or `np.array`): expected log-R ratio
+
+        """
+        ratio = ((1.0 - mcc) * np.asarray(ploidy) + 2.0 * mcc) / 2.0
+        return np.maximum(np.log2(ratio), self.lrr_mu[0])
+
     def sim_b_allele_freq(
-        self, mat_hap, pat_hap, ploidy=2, std_dev=0.2, mix_prop=0.3, seed=42
+        self,
+        mat_hap,
+        pat_hap,
+        ploidy=2,
+        std_dev=0.2,
+        mix_prop=0.3,
+        seed=42,
+        mat_geno=None,
+        mcc=0.0,
     ):
-        """Simulate of B-allele frequency."""
+        """Simulate of B-allele frequency.
+
+        With mcc > 0 a fraction mcc of the cells are maternal, with genotype
+        dosage mat_geno, and noise is added after mixing.
+        """
         np.random.seed(seed)
         assert (ploidy <= 3) & (ploidy >= 0)
         assert mat_hap.size == pat_hap.size
+        assert (mcc >= 0.0) and (mcc < 1.0)
+        assert (mcc == 0.0) or (mat_geno.size == mat_hap.size)
         true_geno = mat_hap + pat_hap
         baf = np.zeros(true_geno.size)
         for i in range(baf.size):
-            if ploidy == 0:
+            if (ploidy == 0) and (mcc == 0.0):
                 # I think that this might have to change ...
                 a, b = (0 - 0.5) / std_dev, (1 - 0.5) / std_dev
                 baf[i] = truncnorm.rvs(a, b, loc=0.5, scale=std_dev)
             else:
-                mu_i = true_geno[i] / ploidy
+                if mcc > 0.0:
+                    mu_i = self.mcc_baf_mean(true_geno[i], ploidy, mat_geno[i], mcc)
+                else:
+                    mu_i = true_geno[i] / ploidy
                 a, b = (0 - mu_i) / std_dev, (1 - mu_i) / std_dev
                 if mu_i == 0:
                     baf[i] = (
@@ -468,21 +522,25 @@ class PGTSimBase:
                     baf[i] = truncnorm.rvs(a, b, loc=mu_i, scale=std_dev)
         return true_geno, baf
 
-    def sim_logR_ratio(self, mat_hap, pat_hap, ploidy=2, alpha=0.5, seed=42):
+    def sim_logR_ratio(self, mat_hap, pat_hap, ploidy=2, alpha=0.5, seed=42, mcc=0.0):
         """Simulate logR-ratio conditional on ploidy.
 
-        Alpha is the degree to which the variance is increased for the LRR.
+        Alpha is the degree to which the variance is increased for the LRR. With
+        mcc > 0 the mean is the copy ratio of the embryo mixed with a fraction
+        mcc of diploid maternal cells.
         """
         assert seed > 0
         assert ploidy in [0, 1, 2, 3]
         assert alpha > 0
         assert mat_hap.size == pat_hap.size
+        assert (mcc >= 0.0) and (mcc < 1.0)
         np.random.seed(seed)
         m = mat_hap.size
         # Actually simulate per-variant noise in LRR and varying
         alphas = lognorm.rvs(s=alpha, scale=1.0, size=m)
         sigmas = self.lrr_sd[ploidy] * np.sqrt(alphas)
-        lrr = norm.rvs(self.lrr_mu[ploidy], scale=sigmas, size=m)
+        mu = self.lrr_mu[ploidy] if mcc == 0.0 else self.mcc_lrr_mean(ploidy, mcc)
+        lrr = norm.rvs(mu, scale=sigmas, size=m)
         return lrr, sigmas
 
     def sim_total_depth(self, ploidy, coverage=1.0, mismap_rate=1e-2):
@@ -681,8 +739,17 @@ class PGTSim(PGTSimBase):
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
+        mcc=0.0,
     ):
-        """Simulate a single embryo with a given ploidy status."""
+        """Simulate a single embryo with a given ploidy status.
+
+        mcc is the fraction of maternal cells contaminating the sample, applied to
+        both BAF and LRR before noise is added (array data only).
+        """
+        if reads and mcc > 0.0:
+            raise NotImplementedError(
+                "Maternal cell contamination is only simulated for array data."
+            )
         np.random.seed(seed)
         mat_haps, pat_haps, ps = self.draw_parental_genotypes(afs=afs, m=m, seed=seed)
         pos = np.sort(np.random.uniform(high=length, size=m))
@@ -750,9 +817,11 @@ class PGTSim(PGTSimBase):
                 std_dev=std_dev,
                 mix_prop=mix_prop,
                 seed=seed,
+                mat_geno=mat_haps.sum(axis=0),
+                mcc=mcc,
             )
             lrr, sigmas = self.sim_logR_ratio(
-                mat_hap1, pat_hap1, ploidy=ploidy, alpha=alpha, seed=seed
+                mat_hap1, pat_hap1, ploidy=ploidy, alpha=alpha, seed=seed, mcc=mcc
             )
             alt_reads = None
             ref_reads = None
@@ -788,6 +857,7 @@ class PGTSim(PGTSimBase):
             "std_dev": std_dev,
             "mix_prop": mix_prop,
             "alpha": alpha,
+            "mcc": mcc,
             "seed": seed,
         }
         return res_table
@@ -1016,9 +1086,24 @@ class PGTSim(PGTSimBase):
         }
         return res_table
 
-    def sim_cell_contamination(self, baf, haps, fraction=0.01, seed=42):
-        """
-        Simulate parental cell contamination (typically maternal)
+    def sim_cell_contamination(self, baf, haps, fraction=0.01, ploidy=2, seed=42):
+        """Add parental cell contamination (typically maternal) to an observed BAF.
+
+        Mixes allele copies: a fraction of the cells are the parent's, with two
+        copies, and the rest are embryo cells with `ploidy` copies. This mixes an
+        already-noisy BAF, so it also shrinks the noise; `full_ploidy_sim` and
+        `full_segmental_sim` take `mcc` to add noise after mixing instead.
+
+        Args:
+            baf (`np.array`): m-length embryo B-allele frequency
+            haps (`np.array`): 2 x m haplotypes of the contaminating parent
+            fraction (`float`): fraction of parental cells in the sample
+            ploidy (`int` or `np.array`): embryo copy number, per site if an array
+            seed (`int`): random seed
+
+        Output:
+            cc_baf (`np.array`): m-length B-allele frequency of the mixture
+
         """
         assert fraction >= 0.0
         assert fraction < 1.0
@@ -1027,14 +1112,34 @@ class PGTSim(PGTSimBase):
         assert baf.size == haps.shape[1]
         assert seed > 0
         np.random.seed(seed)
-        m = baf.size
-        cc_baf = np.zeros(m)
-        for i in range(m):
-            # Dosage of the contaminating parental individual
-            geno = np.sum(haps[:, i]) / 2.0
-            # Mixture of the existing BAF + genotype-specific BAF ...
-            cc_baf[i] = (1.0 - fraction) * baf[i] + fraction * geno
-        return cc_baf
+        if fraction == 0.0:
+            return baf.copy()
+        k = np.broadcast_to(np.asarray(ploidy, dtype=float), baf.shape)
+        assert np.all((k >= 0) & (k <= 3))
+        # Embryo B-allele copies (none at nullisomy) plus the parent's.
+        embryo = np.where(k > 0, k * baf, 0.0)
+        parent = np.sum(haps, axis=0)
+        return ((1.0 - fraction) * embryo + fraction * parent) / (
+            (1.0 - fraction) * k + 2.0 * fraction
+        )
+
+    def sim_cell_contamination_lrr(self, lrr, fraction=0.01):
+        """Add diploid parental cell contamination to an observed log-R ratio.
+
+        Mixes copy ratios, so LRR = log2(k / 2) becomes
+        log2(((1 - fraction) * k + 2 * fraction) / 2).
+
+        Args:
+            lrr (`np.array`): m-length embryo log-R ratio
+            fraction (`float`): fraction of parental cells in the sample
+
+        Output:
+            cc_lrr (`np.array`): m-length log-R ratio of the mixture
+
+        """
+        assert fraction >= 0.0
+        assert fraction < 1.0
+        return np.log2((1.0 - fraction) * np.exp2(lrr) + fraction)
 
 
 class PGTSimMosaic(PGTSimBase):
@@ -1496,20 +1601,39 @@ class PGTSimSegmental(PGTSimBase):
         )
 
     def sim_b_allele_freq_segmental(
-        self, mat_hap, pat_hap, ploidies, std_dev=0.1, mix_prop=0.6, seed=42
+        self,
+        mat_hap,
+        pat_hap,
+        ploidies,
+        std_dev=0.1,
+        mix_prop=0.6,
+        seed=42,
+        mat_geno=None,
+        mcc=0.0,
     ):
-        """Simulate B-allele frequency conditional on parental haplotypes."""
+        """Simulate B-allele frequency conditional on parental haplotypes.
+
+        With mcc > 0 a fraction mcc of the cells are maternal, with genotype
+        dosage mat_geno, and noise is added after mixing.
+        """
         np.random.seed(seed)
         assert mat_hap.size == pat_hap.size
         assert ploidies.size == mat_hap.size
+        assert (mcc >= 0.0) and (mcc < 1.0)
+        assert (mcc == 0.0) or (mat_geno.size == mat_hap.size)
         true_geno = mat_hap + pat_hap
         baf = np.zeros(true_geno.size)
         for i in range(baf.size):
-            if ploidies[i] == 0:
+            if (ploidies[i] == 0) and (mcc == 0.0):
                 a, b = (0 - 0.5) / std_dev, (1 - 0.5) / std_dev
                 baf[i] = truncnorm.rvs(a, b, loc=0.5, scale=std_dev)
             else:
-                mu_i = true_geno[i] / ploidies[i]
+                if mcc > 0.0:
+                    mu_i = self.mcc_baf_mean(
+                        true_geno[i], ploidies[i], mat_geno[i], mcc
+                    )
+                else:
+                    mu_i = true_geno[i] / ploidies[i]
                 a, b = (0 - mu_i) / std_dev, (1 - mu_i) / std_dev
                 if mu_i == 0:
                     baf[i] = (
@@ -1526,6 +1650,37 @@ class PGTSimSegmental(PGTSimBase):
                 else:
                     baf[i] = truncnorm.rvs(a, b, loc=mu_i, scale=std_dev)
         return true_geno, baf, ploidies
+
+    def sim_logR_ratio_segmental(self, ploidies, alpha=1.0, mcc=0.0, seed=42):
+        """Simulate log-R ratio site by site from a per-site copy number.
+
+        Segmental counterpart of `sim_logR_ratio`, which takes a single ploidy.
+
+        Args:
+            ploidies (`np.array`): m-length per-site embryo copy number
+            alpha (`float`): lognormal inflation of the per-site LRR variance
+            mcc (`float`): fraction of maternal cells in the sample
+            seed (`int`): random seed
+
+        Output:
+            lrr (`np.array`): m-length log-R ratio
+            sigmas (`np.array`): m-length per-site LRR standard deviation
+
+        """
+        assert seed > 0
+        assert alpha > 0
+        assert np.all(np.isin(ploidies, [0, 1, 2, 3]))
+        assert (mcc >= 0.0) and (mcc < 1.0)
+        np.random.seed(seed)
+        m = ploidies.size
+        alphas = lognorm.rvs(s=alpha, scale=1.0, size=m)
+        sigmas = np.array([self.lrr_sd[int(k)] for k in ploidies]) * np.sqrt(alphas)
+        if mcc == 0.0:
+            mu = np.array([self.lrr_mu[int(k)] for k in ploidies])
+        else:
+            mu = self.mcc_lrr_mean(ploidies, mcc)
+        lrr = norm.rvs(mu, scale=sigmas, size=m)
+        return lrr, sigmas
 
     def sim_read_counts_segmental(
         self,
@@ -1598,8 +1753,18 @@ class PGTSimSegmental(PGTSimBase):
         switch_err_rate=1e-2,
         err_rate=1e-3,
         seed=42,
+        alpha=1.0,
+        mcc=0.0,
     ):
-        """Conduct a full simulation of segmental aneuploidies conditional on parental haplotypes."""
+        """Conduct a full simulation of segmental aneuploidies conditional on parental haplotypes.
+
+        mcc is the fraction of maternal cells contaminating the sample, applied to
+        both BAF and LRR before noise is added (array data only).
+        """
+        if reads and mcc > 0.0:
+            raise NotImplementedError(
+                "Maternal cell contamination is only simulated for array data."
+            )
         np.random.seed(seed)
         pos = np.sort(np.random.uniform(high=length, size=m))
         mat_haps, pat_haps, ps = self.draw_parental_genotypes(afs=afs, m=m, seed=seed)
@@ -1638,6 +1803,8 @@ class PGTSimSegmental(PGTSimBase):
                 seed=seed,
             )
             baf = None
+            lrr = None
+            sigmas = None
             assert geno.size == m
             assert alt_reads.size == m
             assert ref_reads.size == m
@@ -1649,6 +1816,11 @@ class PGTSimSegmental(PGTSimBase):
                 std_dev=std_dev,
                 mix_prop=mix_prop,
                 seed=seed,
+                mat_geno=mat_haps.sum(axis=0),
+                mcc=mcc,
+            )
+            lrr, sigmas = self.sim_logR_ratio_segmental(
+                ploidies, alpha=alpha, mcc=mcc, seed=seed
             )
             alt_reads = None
             ref_reads = None
@@ -1684,6 +1856,8 @@ class PGTSimSegmental(PGTSimBase):
             "seg_end": end,
             "geno_embryo": geno,
             "baf": baf,
+            "lrr": lrr,
+            "sigmas": sigmas,
             "alt_reads": alt_reads,
             "ref_reads": ref_reads,
             "af": ps,
@@ -1692,6 +1866,8 @@ class PGTSimSegmental(PGTSimBase):
             "rec_rate": rec_rate,
             "std_dev": std_dev,
             "mix_prop": mix_prop,
+            "alpha": alpha,
+            "mcc": mcc,
             "seed": seed,
         }
         return res_table

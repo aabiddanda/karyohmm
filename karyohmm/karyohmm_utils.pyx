@@ -1,4 +1,4 @@
-from libc.math cimport erf, exp, expm1, lgamma, log, log1p, pi, sqrt
+from libc.math cimport erf, exp, expm1, lgamma, log, log1p, log2, pi, sqrt
 import numpy as np
 
 
@@ -298,6 +298,76 @@ cpdef double emission_lrr(double lrr, int k=2, double std_dev=0.2):
         return -1
     else:
         return norm_logl(lrr, mu_i[k], std_dev)
+
+
+cpdef double emission_baf_mcc(double baf, double m, double p, double mg, double f=0.0, double pi0=0.2, double std_dev=0.2, int k=2):
+    """Emission for B-allele frequency in a sample carrying maternal cell contamination.
+
+    Mixes allele copies rather than BAFs: a fraction f of the cells are maternal,
+    with two copies and B-allele dosage mg, and the rest are embryo cells with k
+    copies and dosage m + p, so the expected BAF is
+
+        ((1 - f) * (m + p) + f * mg) / ((1 - f) * k + 2 * f).
+
+    The point masses at 0 and 1 apply only when every cell in the mixture is
+    homozygous for the same allele. At f = 0 this is exactly emission_baf.
+
+    Args:
+        baf (float): observed B-allele frequency.
+        m (float): embryo B-allele dosage inherited from the mother (-1 if k = 0).
+        p (float): embryo B-allele dosage inherited from the father (-1 if k = 0).
+        mg (float): maternal genotype B-allele dosage in {0, 1, 2}.
+        f (float): fraction of maternal cells in the sample.
+        pi0 (float): weight of the point masses at 0 and 1.
+        std_dev (float): BAF noise standard deviation.
+        k (int): embryo copy number.
+
+    Output:
+        loglik (float): log-likelihood of baf.
+    """
+    cdef double d, mu_i, x, x0, x1
+    if f == 0.0:
+        return emission_baf(baf, m, p, pi0=pi0, std_dev=std_dev, k=k)
+    d = 0.0 if k == 0 else m + p
+    mu_i = ((1.0 - f) * d + f * mg) / ((1.0 - f) * k + 2.0 * f)
+    x = truncnorm_pdf(baf, 0.0, 1.0, mu=mu_i, sigma=std_dev)
+    if (d == 0.0) and (mg == 0.0):
+        x0 = truncnorm_pdf(baf, 0.0, 1.0, mu=0.0, sigma=2e-3)
+        return logaddexp(log(pi0) + x0, log(1 - pi0) + x)
+    if (d == k) and (mg == 2.0):
+        x1 = truncnorm_pdf(baf, 0.0, 1.0, mu=1.0, sigma=2e-3)
+        return logaddexp(log(pi0) + x1, log(1 - pi0) + x)
+    return x
+
+
+cpdef double emission_lrr_mcc(double lrr, int k=2, double f=0.0, double delta=0.0, double std_dev=0.2):
+    """Emission for log-R ratio in a sample carrying maternal cell contamination.
+
+    The expected LRR is the log2 copy ratio of the mixture against a diploid
+    reference, log2(((1 - f) * k + 2 * f) / 2), floored at the nullisomy value
+    of -3 used by emission_lrr, minus a sample-level normalisation offset delta.
+    At f = 0 and delta = 0 this is exactly emission_lrr.
+
+    NOTE: missing LRR is denoted as -9
+
+    Args:
+        lrr (float): observed log-R ratio.
+        k (int): embryo copy number.
+        f (float): fraction of maternal cells in the sample.
+        delta (float): sample-level LRR offset from array normalisation.
+        std_dev (float): LRR noise standard deviation at this site.
+
+    Output:
+        loglik (float): log-likelihood of lrr.
+    """
+    cdef double ratio, mu_i
+    if (f == 0.0) and (delta == 0.0):
+        return emission_lrr(lrr, k=k, std_dev=std_dev)
+    if lrr == -9:
+        return -1
+    ratio = ((1.0 - f) * k + 2.0 * f) / 2.0
+    mu_i = -3.0 if ratio <= 0.125 else log2(ratio)
+    return norm_logl(lrr, mu_i - delta, std_dev)
 
 
 cpdef double loglik_mcc(double baf, int mg, int pg, double std_dev=0.1, double c=0.1):

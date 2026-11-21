@@ -6,10 +6,15 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from karyohmm_utils import (
     emission_baf,
+    emission_baf_mcc,
     emission_depth,
+    emission_lrr,
+    emission_lrr_mcc,
     emission_reads,
     mat_dosage,
+    norm_logl,
     pat_dosage,
+    truncnorm_pdf,
 )
 from scipy.integrate import trapezoid
 from scipy.optimize import minimize_scalar
@@ -300,3 +305,100 @@ def test_emission_depth_recovers_coverage(true_coverage):
 
     res = minimize_scalar(nll, bounds=(0.1, 300.0), method="bounded")
     assert res.x == pytest.approx(true_coverage, rel=0.05)
+
+
+@pytest.mark.parametrize("baf", [0.0, 0.2, 0.5, 0.7, 1.0])
+@pytest.mark.parametrize(
+    "m,p,k", [(-1, -1, 0), (0, -1, 1), (1, -1, 1), (0, 1, 2), (1, 1, 2), (2, 1, 3)]
+)
+@pytest.mark.parametrize("mg", [0, 1, 2])
+def test_emission_baf_mcc_no_contamination(baf, m, p, k, mg):
+    """At f = 0 the contamination-aware BAF emission is exactly emission_baf."""
+    assert emission_baf_mcc(baf, m, p, mg, f=0.0, pi0=0.3, std_dev=0.1, k=k) == (
+        emission_baf(baf, m, p, pi0=0.3, std_dev=0.1, k=k)
+    )
+
+
+@pytest.mark.parametrize("f", [0.05, 0.2, 0.4])
+@pytest.mark.parametrize(
+    "m,p,mg,k",
+    [
+        # Disomic het embryo, mother homozygous B: BAF 0.5 + f / 2.
+        (1, 0, 2, 2),
+        # Disomic het embryo, mother homozygous A: BAF 0.5 - f / 2.
+        (0, 1, 0, 2),
+        # Monosomy, trisomy, and nullisomy, where copy weighting matters.
+        (0, -1, 2, 1),
+        (1, 1, 2, 3),
+        (2, 0, 1, 3),
+        (-1, -1, 1, 0),
+    ],
+)
+def test_emission_baf_mcc_mean(f, m, p, mg, k):
+    """The emission is a truncated normal at the copy-weighted mixture mean."""
+    d = 0 if k == 0 else m + p
+    mu = ((1 - f) * d + f * mg) / ((1 - f) * k + 2 * f)
+    for baf in [0.3, 0.55, 0.8]:
+        assert np.isclose(
+            emission_baf_mcc(baf, m, p, mg, f=f, std_dev=0.1, k=k),
+            truncnorm_pdf(baf, 0.0, 1.0, mu=mu, sigma=0.1),
+        )
+    if (k == 2) and (d == 1):
+        assert np.isclose(mu, 0.5 + f / 2 if mg == 2 else 0.5 - f / 2)
+
+
+@pytest.mark.parametrize("f", [0.05, 0.3])
+def test_emission_baf_mcc_point_masses(f):
+    """Point masses at 0 and 1 apply only when every cell is homozygous for that allele."""
+    # Embryo and mother both homozygous A: the mixture is exactly 0.
+    shared = emission_baf_mcc(0.0, 0, 0, 0, f=f, pi0=0.5, std_dev=0.1, k=2)
+    # Embryo homozygous A but the mother is het: no point mass at 0.
+    mixed = emission_baf_mcc(0.0, 0, 0, 1, f=f, pi0=0.5, std_dev=0.1, k=2)
+    mu = f * 1 / 2
+    assert np.isclose(mixed, truncnorm_pdf(0.0, 0.0, 1.0, mu=mu, sigma=0.1))
+    assert shared > mixed
+    # The same at 1, for a trisomic embryo homozygous B and a homozygous B mother.
+    assert emission_baf_mcc(1.0, 2, 1, 2, f=f, pi0=0.5, std_dev=0.1, k=3) > (
+        emission_baf_mcc(1.0, 2, 1, 1, f=f, pi0=0.5, std_dev=0.1, k=3)
+    )
+
+
+@pytest.mark.parametrize("f", [0.1, 0.3])
+@pytest.mark.parametrize("mg,k", [(0, 2), (1, 2), (2, 3), (1, 1)])
+def test_emission_baf_mcc_integrates_to_one(f, mg, k):
+    """Away from the point masses the BAF emission is a density on [0, 1]."""
+    x = np.linspace(0, 1, 20001)
+    dens = np.exp([emission_baf_mcc(b, 1, 0, mg, f=f, std_dev=0.1, k=k) for b in x])
+    assert np.isclose(trapezoid(dens, x), 1.0, atol=1e-3)
+
+
+@pytest.mark.parametrize("lrr", [-9.0, -2.0, -0.4, 0.0, 0.3])
+@pytest.mark.parametrize("k", [0, 1, 2, 3])
+def test_emission_lrr_mcc_no_contamination(lrr, k):
+    """At f = 0 and delta = 0 the contamination-aware LRR emission is exactly emission_lrr."""
+    assert emission_lrr_mcc(lrr, k=k, std_dev=0.2) == emission_lrr(lrr, k=k, std_dev=0.2)
+
+
+@pytest.mark.parametrize("f", [0.05, 0.2, 0.4])
+@pytest.mark.parametrize("k", [1, 2, 3])
+@pytest.mark.parametrize("delta", [0.0, 0.3])
+def test_emission_lrr_mcc_mean(f, k, delta):
+    """The LRR emission is centred on the log2 copy ratio of the mixture, minus delta."""
+    mu = np.log2(((1 - f) * k + 2 * f) / 2) - delta
+    for lrr in [-1.0, 0.0, 0.4]:
+        assert np.isclose(
+            emission_lrr_mcc(lrr, k=k, f=f, delta=delta, std_dev=0.2),
+            norm_logl(lrr, mu, 0.2),
+        )
+    assert emission_lrr_mcc(-9.0, k=k, f=f, delta=delta) == -1
+
+
+def test_emission_lrr_mcc_nullisomy_floor():
+    """With almost no maternal cells, nullisomy keeps the -3 floor of emission_lrr."""
+    assert np.isclose(
+        emission_lrr_mcc(-3.0, k=0, f=0.01, std_dev=0.2), norm_logl(-3.0, -3.0, 0.2)
+    )
+    # Enough maternal cells lift it above the floor.
+    assert np.isclose(
+        emission_lrr_mcc(-1.0, k=0, f=0.5, std_dev=0.2), norm_logl(-1.0, -1.0, 0.2)
+    )

@@ -332,13 +332,17 @@ def main(
         logging.info(
             f"Simulating at a maternal cell contamination of {maternal_cell_contamination * 100}% ..."
         )
-        cc_baf = pgt_sim.sim_cell_contamination(
-            bafs=results["baf"],
-            haps=results["mat_haps_prime"],
+        results["baf"] = pgt_sim.sim_cell_contamination(
+            baf=results["baf"],
+            haps=results["mat_haps"],
             fraction=maternal_cell_contamination,
+            ploidy=results.get("ploidies", int(ploidy)),
             seed=seed,
         )
-        results["baf"] = cc_baf
+        if results.get("lrr") is not None:
+            results["lrr"] = pgt_sim.sim_cell_contamination_lrr(
+                results["lrr"], fraction=maternal_cell_contamination
+            )
     if format == "tsv":
         logging.info(
             "Writing output in TSV format (note: not all intermediate data will be kept) ..."
