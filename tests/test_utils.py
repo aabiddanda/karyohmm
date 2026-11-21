@@ -18,7 +18,7 @@ from karyohmm_utils import (
 )
 from scipy.integrate import trapezoid
 from scipy.optimize import minimize_scalar
-from scipy.stats import binom, poisson, truncnorm
+from scipy.stats import binom, norm, poisson, truncnorm
 
 from karyohmm import PGTSim
 
@@ -402,3 +402,25 @@ def test_emission_lrr_mcc_nullisomy_floor():
     assert np.isclose(
         emission_lrr_mcc(-1.0, k=0, f=0.5, std_dev=0.2), norm_logl(-1.0, -1.0, 0.2)
     )
+
+
+@pytest.mark.parametrize("s", [0.05, 0.15, 0.3, 1.2])
+@pytest.mark.parametrize("x,m", [(0.0, 0.0), (0.3, -0.2), (-1.5, -1.0)])
+def test_norm_logl_matches_scipy(x, m, s):
+    """norm_logl is the normal log-density with standard deviation s."""
+    assert np.isclose(norm_logl(x, m, s), norm.logpdf(x, loc=m, scale=s))
+
+
+@pytest.mark.parametrize("f", [0.0, 0.2])
+@pytest.mark.parametrize("k", [1, 2, 3])
+def test_emission_lrr_per_probe_sd(f, k):
+    """Both LRR emissions use the per-probe standard deviation they are given."""
+    rng = np.random.default_rng(1)
+    sigmas = 0.16 * np.sqrt(rng.lognormal(sigma=1.0, size=50))
+    lrrs = rng.normal(0.0, 0.3, size=50)
+    mu = np.log2(((1 - f) * k + 2 * f) / 2)
+    for lrr, s in zip(lrrs, sigmas):
+        expected = norm.logpdf(lrr, loc=mu, scale=s)
+        assert np.isclose(emission_lrr_mcc(lrr, k=k, f=f, std_dev=s), expected)
+        if f == 0.0:
+            assert np.isclose(emission_lrr(lrr, k=k, std_dev=s), expected)

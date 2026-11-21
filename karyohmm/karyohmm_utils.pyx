@@ -72,8 +72,8 @@ cdef double norm_pdf(double x):
     return logsqrt2pi - 0.5*(x**2)
 
 cpdef double norm_logl(double x, double m, double s):
-    """Normal log-likelihood function."""
-    return logsqrt2pi - 0.5*log(s) - 0.5*((x - m) / s)**2
+    """Normal log-likelihood function; s is the standard deviation."""
+    return logsqrt2pi - log(s) - 0.5*((x - m) / s)**2
 
 cpdef double truncnorm_pdf(double x, double a, double b, double mu=0.5, double sigma=0.2):
     """Custom definition of the log of the truncated normal pdf."""
@@ -355,7 +355,8 @@ cpdef double emission_lrr_mcc(double lrr, int k=2, double f=0.0, double delta=0.
         k (int): embryo copy number.
         f (float): fraction of maternal cells in the sample.
         delta (float): sample-level LRR offset from array normalisation.
-        std_dev (float): LRR noise standard deviation at this site.
+        std_dev (float): per-probe LRR standard deviation at this site, as
+            estimated for the array (the `sigmas` array the HMMs take).
 
     Output:
         loglik (float): log-likelihood of lrr.
