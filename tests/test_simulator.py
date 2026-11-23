@@ -563,3 +563,16 @@ def test_sim_lrr_offset_triploidy(mcc):
         m=2000, ploidy=3, mean_size=500, alpha=0.1, mcc=mcc, delta=delta, seed=5
     )
     assert np.allclose(seg_normed["lrr"], seg["lrr"] - delta)
+
+
+def test_sim_starting_haplotypes_random():
+    """Duplicated copies start on a random haplotype, and heterodisomy on both homologues."""
+    starts = []
+    for seed in range(1, 21):
+        data = pgt_sim.full_ploidy_sim(m=200, ploidy=3, mat_skew=1.0, seed=seed)
+        starts.append(data["zs_maternal"][:, 0])
+        upd = pgt_sim.full_ploidy_sim(m=200, ploidy=2, upd="2m1", seed=seed)
+        assert upd["zs_maternal"][0, 0] != upd["zs_maternal"][1, 0]
+    starts = np.array(starts)
+    assert 0 < starts.mean() < 1
+    assert np.any(starts[:, 0] != starts[:, 1])

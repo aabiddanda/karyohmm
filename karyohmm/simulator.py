@@ -228,9 +228,9 @@ class PGTSimBase:
             pat = binom.rvs(1, 1.0 - mat_skew)
             if pat:
                 # Simulate a paternal trisomy
-                zs_maternal[0] = binom.rvs(0, 0.5)
-                zs0_paternal[0] = binom.rvs(0, 0.5)
-                zs1_paternal[0] = binom.rvs(0, 0.5)
+                zs_maternal[0] = binom.rvs(1, 0.5)
+                zs0_paternal[0] = binom.rvs(1, 0.5)
+                zs1_paternal[0] = binom.rvs(1, 0.5)
 
                 for i in range(1, m):
                     d = pos[i] - pos[i - 1]
@@ -263,9 +263,9 @@ class PGTSimBase:
                 aploid = "3p"
             else:
                 # Simulate a maternal trisomy
-                zs_paternal[0] = binom.rvs(0, 0.5)
-                zs0_maternal[0] = binom.rvs(0, 0.5)
-                zs1_maternal[0] = binom.rvs(0, 0.5)
+                zs_paternal[0] = binom.rvs(1, 0.5)
+                zs0_maternal[0] = binom.rvs(1, 0.5)
+                zs1_maternal[0] = binom.rvs(1, 0.5)
                 for i in range(1, m):
                     d = pos[i] - pos[i - 1]
                     zs_paternal[i] = (
@@ -348,7 +348,7 @@ class PGTSimBase:
         zs1_paternal = np.zeros(m, dtype=np.uint16)
         if aploid == "2p0":
             # Case: paternal isodisomy
-            zs_paternal[0] = binom.rvs(0, 0.5)
+            zs_paternal[0] = binom.rvs(1, 0.5)
             for i in range(1, m):
                 # We switch with a specific probability
                 d = pos[i] - pos[i - 1]
@@ -366,8 +366,9 @@ class PGTSimBase:
             mat_real_hap = np.zeros(m, dtype=np.uint16)
         elif aploid == "2p1":
             # Case: paternal heterodisomy
-            zs0_paternal[0] = binom.rvs(0, 0.5)
-            zs1_paternal[0] = binom.rvs(0, 0.5)
+            # Heterodisomy starts on different homologues.
+            zs0_paternal[0] = binom.rvs(1, 0.5)
+            zs1_paternal[0] = 1 - zs0_paternal[0]
             # We switch with a specific probability
             for i in range(1, m):
                 d = pos[i] - pos[i - 1]
@@ -391,7 +392,7 @@ class PGTSimBase:
             mat_real_hap = np.zeros(m, dtype=np.uint16)
         elif aploid == "2m0":
             # Case: maternal isodisomy
-            zs_maternal[0] = binom.rvs(0, 0.5)
+            zs_maternal[0] = binom.rvs(1, 0.5)
             for i in range(1, m):
                 # We switch with a specific probability
                 d = pos[i] - pos[i - 1]
@@ -409,8 +410,9 @@ class PGTSimBase:
             pat_real_hap = np.zeros(m, dtype=np.uint16)
         else:
             # Case: maternal heterodisomy
-            zs0_maternal[0] = binom.rvs(0, 0.5)
-            zs1_maternal[0] = binom.rvs(0, 0.5)
+            # Heterodisomy starts on different homologues.
+            zs0_maternal[0] = binom.rvs(1, 0.5)
+            zs1_maternal[0] = 1 - zs0_maternal[0]
             # We switch with a specific probability
             for i in range(1, m):
                 d = pos[i] - pos[i - 1]
