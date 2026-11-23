@@ -542,3 +542,24 @@ def test_sim_cell_contamination_copy_weighted(fraction):
     assert np.allclose(trisomy, expected)
     lrr = pgt_sim.sim_cell_contamination_lrr(np.full(3, np.log2(1.5)), fraction=fraction)
     assert np.allclose(lrr, np.log2(((1 - fraction) * 3 + 2 * fraction) / 2))
+
+
+@pytest.mark.parametrize("mcc", [0.0, 0.2])
+def test_sim_lrr_offset_triploidy(mcc):
+    """An LRR offset of the triploid copy ratio re-centres a trisomy on zero, as arrays do."""
+    delta = np.log2(((1 - mcc) * 3 + 2 * mcc) / 2)
+    raw = pgt_sim.full_ploidy_sim(m=4000, ploidy=3, alpha=0.1, mcc=mcc, seed=5)
+    normed = pgt_sim.full_ploidy_sim(
+        m=4000, ploidy=3, alpha=0.1, mcc=mcc, delta=delta, seed=5
+    )
+    assert normed["delta"] == delta
+    assert np.allclose(normed["lrr"], raw["lrr"] - delta)
+    assert np.array_equal(normed["baf"], raw["baf"])
+    assert np.isclose(np.mean(normed["lrr"]), 0.0, atol=0.02)
+    seg = pgt_sim_segmental.full_segmental_sim(
+        m=2000, ploidy=3, mean_size=500, alpha=0.1, mcc=mcc, seed=5
+    )
+    seg_normed = pgt_sim_segmental.full_segmental_sim(
+        m=2000, ploidy=3, mean_size=500, alpha=0.1, mcc=mcc, delta=delta, seed=5
+    )
+    assert np.allclose(seg_normed["lrr"], seg["lrr"] - delta)

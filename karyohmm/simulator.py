@@ -522,12 +522,15 @@ class PGTSimBase:
                     baf[i] = truncnorm.rvs(a, b, loc=mu_i, scale=std_dev)
         return true_geno, baf
 
-    def sim_logR_ratio(self, mat_hap, pat_hap, ploidy=2, alpha=0.5, seed=42, mcc=0.0):
+    def sim_logR_ratio(
+        self, mat_hap, pat_hap, ploidy=2, alpha=0.5, seed=42, mcc=0.0, delta=0.0
+    ):
         """Simulate logR-ratio conditional on ploidy.
 
         Alpha is the degree to which the variance is increased for the LRR. With
         mcc > 0 the mean is the copy ratio of the embryo mixed with a fraction
-        mcc of diploid maternal cells.
+        mcc of diploid maternal cells. delta is subtracted from every probe, as
+        sample-level array normalisation does (e.g. log2(1.5) for a triploid).
         """
         assert seed > 0
         assert ploidy in [0, 1, 2, 3]
@@ -540,7 +543,7 @@ class PGTSimBase:
         alphas = lognorm.rvs(s=alpha, scale=1.0, size=m)
         sigmas = self.lrr_sd[ploidy] * np.sqrt(alphas)
         mu = self.lrr_mu[ploidy] if mcc == 0.0 else self.mcc_lrr_mean(ploidy, mcc)
-        lrr = norm.rvs(mu, scale=sigmas, size=m)
+        lrr = norm.rvs(mu - delta, scale=sigmas, size=m)
         return lrr, sigmas
 
     def sim_total_depth(self, ploidy, coverage=1.0, mismap_rate=1e-2):
@@ -795,11 +798,14 @@ class PGTSim(PGTSimBase):
         err_rate=1e-3,
         seed=42,
         mcc=0.0,
+        delta=0.0,
     ):
         """Simulate a single embryo with a given ploidy status.
 
         mcc is the fraction of maternal cells contaminating the sample, applied to
-        both BAF and LRR before noise is added (array data only).
+        both BAF and LRR before noise is added (array data only). delta is a
+        sample-level LRR offset subtracted from every probe, modelling array
+        normalisation.
         """
         if reads and mcc > 0.0:
             raise NotImplementedError(
@@ -876,7 +882,13 @@ class PGTSim(PGTSimBase):
                 mcc=mcc,
             )
             lrr, sigmas = self.sim_logR_ratio(
-                mat_hap1, pat_hap1, ploidy=ploidy, alpha=alpha, seed=seed, mcc=mcc
+                mat_hap1,
+                pat_hap1,
+                ploidy=ploidy,
+                alpha=alpha,
+                seed=seed,
+                mcc=mcc,
+                delta=delta,
             )
             alt_reads = None
             ref_reads = None
@@ -913,6 +925,7 @@ class PGTSim(PGTSimBase):
             "mix_prop": mix_prop,
             "alpha": alpha,
             "mcc": mcc,
+            "delta": delta,
             "seed": seed,
         }
         return res_table
@@ -1651,7 +1664,9 @@ class PGTSimSegmental(PGTSimBase):
                     baf[i] = truncnorm.rvs(a, b, loc=mu_i, scale=std_dev)
         return true_geno, baf, ploidies
 
-    def sim_logR_ratio_segmental(self, ploidies, alpha=1.0, mcc=0.0, seed=42):
+    def sim_logR_ratio_segmental(
+        self, ploidies, alpha=1.0, mcc=0.0, seed=42, delta=0.0
+    ):
         """Simulate log-R ratio site by site from a per-site copy number.
 
         Segmental counterpart of `sim_logR_ratio`, which takes a single ploidy.
@@ -1661,6 +1676,7 @@ class PGTSimSegmental(PGTSimBase):
             alpha (`float`): lognormal inflation of the per-site LRR variance
             mcc (`float`): fraction of maternal cells in the sample
             seed (`int`): random seed
+            delta (`float`): sample-level LRR offset subtracted from every probe
 
         Output:
             lrr (`np.array`): m-length log-R ratio
@@ -1679,7 +1695,7 @@ class PGTSimSegmental(PGTSimBase):
             mu = np.array([self.lrr_mu[int(k)] for k in ploidies])
         else:
             mu = self.mcc_lrr_mean(ploidies, mcc)
-        lrr = norm.rvs(mu, scale=sigmas, size=m)
+        lrr = norm.rvs(mu - delta, scale=sigmas, size=m)
         return lrr, sigmas
 
     def sim_read_counts_segmental(
@@ -1755,11 +1771,13 @@ class PGTSimSegmental(PGTSimBase):
         seed=42,
         alpha=1.0,
         mcc=0.0,
+        delta=0.0,
     ):
         """Conduct a full simulation of segmental aneuploidies conditional on parental haplotypes.
 
         mcc is the fraction of maternal cells contaminating the sample, applied to
-        both BAF and LRR before noise is added (array data only).
+        both BAF and LRR before noise is added (array data only). delta is a
+        sample-level LRR offset subtracted from every probe.
         """
         if reads and mcc > 0.0:
             raise NotImplementedError(
@@ -1820,7 +1838,7 @@ class PGTSimSegmental(PGTSimBase):
                 mcc=mcc,
             )
             lrr, sigmas = self.sim_logR_ratio_segmental(
-                ploidies, alpha=alpha, mcc=mcc, seed=seed
+                ploidies, alpha=alpha, mcc=mcc, seed=seed, delta=delta
             )
             alt_reads = None
             ref_reads = None
@@ -1868,6 +1886,7 @@ class PGTSimSegmental(PGTSimBase):
             "mix_prop": mix_prop,
             "alpha": alpha,
             "mcc": mcc,
+            "delta": delta,
             "seed": seed,
         }
         return res_table
