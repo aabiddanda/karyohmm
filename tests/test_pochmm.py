@@ -394,3 +394,86 @@ def test_genotype_parent():
     col_sums = np.exp(geno_dosage).sum(axis=0)
     assert np.allclose(col_sums, 1.0, atol=1e-4)
     assert np.all((np.exp(geno_dosage) >= 0.0) & (np.exp(geno_dosage) <= 1.0 + 1e-10))
+
+
+# --- Maternal cell contamination (mcc) and the LRR offset (delta) --- #
+data_mcc_1p = pgt_sim.full_ploidy_sim(
+    m=2000,
+    ploidy=1,
+    mat_skew=1.0,
+    length=2e7,
+    rec_rate=1e-8,
+    std_dev=0.12,
+    mcc=0.3,
+    seed=1,
+)
+
+
+@pytest.mark.parametrize("maternal", [True, False])
+@pytest.mark.parametrize("obs_err", [0.0, 1e-2])
+@pytest.mark.parametrize("mcc,delta", [(0.15, 0.0), (0.3, 0.2)])
+def test_pochmm_fwd_bwd_mcc(maternal, obs_err, mcc, delta):
+    """Forward and backward log-likelihoods agree under contamination and an LRR offset."""
+    data = data_mat_trisomy
+    kwargs = dict(
+        bafs=data["baf"],
+        lrrs=data["lrr"],
+        sigmas=data["sigmas"],
+        pos=data["pos"],
+        haps=data["mat_haps"] if maternal else data["pat_haps"],
+        freqs=data["af"],
+        maternal=maternal,
+        obs_err=obs_err,
+        mcc=mcc,
+        delta=delta,
+    )
+    pochmm = PocHMM()
+    _, _, _, _, loglik = pochmm.forward_algorithm(**kwargs)
+    _, _, _, _, loglik2 = pochmm.backward_algorithm(**kwargs)
+    assert np.isclose(loglik, loglik2)
+    gammas, _, _ = pochmm.forward_backward(**kwargs)
+    assert np.allclose(np.exp(gammas).sum(axis=0), 1.0)
+
+
+@pytest.mark.parametrize("shift", [-0.3, 0.25])
+def test_pochmm_lrr_offset(shift):
+    """Shifting every LRR by -delta and setting the offset to delta leaves the likelihood unchanged."""
+    data = data_mat_trisomy
+    kwargs = dict(
+        bafs=data["baf"],
+        sigmas=data["sigmas"],
+        pos=data["pos"],
+        haps=data["mat_haps"],
+        freqs=data["af"],
+        mcc=0.1,
+    )
+    pochmm = PocHMM()
+    *_, base = pochmm.forward_algorithm(lrrs=data["lrr"], delta=0.0, **kwargs)
+    *_, offset = pochmm.forward_algorithm(lrrs=data["lrr"] - shift, delta=shift, **kwargs)
+    *_, unmatched = pochmm.forward_algorithm(lrrs=data["lrr"] - shift, delta=0.0, **kwargs)
+    assert np.isclose(base, offset)
+    assert unmatched < base
+
+
+def test_pochmm_mcc_rescues_paternal_monosomy():
+    """With BAF alone, 30% MCC makes 1p look like 3p unless the model accounts for it."""
+    data = data_mcc_1p
+    m = data["baf"].size
+    kwargs = dict(
+        bafs=data["baf"],
+        lrrs=np.full(m, -9.0),
+        sigmas=np.ones(m),
+        pos=data["pos"],
+        haps=data["mat_haps"],
+        freqs=data["af"],
+        pi0=0.3,
+        std_dev=0.12,
+    )
+    pochmm = PocHMM()
+    naive = pochmm.posterior_karyotypes(*pochmm.forward_backward(**kwargs)[::2])
+    aware = pochmm.posterior_karyotypes(
+        *pochmm.forward_backward(mcc=data["mcc"], **kwargs)[::2]
+    )
+    assert max(naive, key=naive.get) == "3p"
+    assert max(aware, key=aware.get) == "1p"
+    assert aware["1p"] > 0.95

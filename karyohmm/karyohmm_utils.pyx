@@ -1086,8 +1086,12 @@ def viterbi_algo_sibs(bafs, pos, mat_haps, pat_haps, states, karyotypes, double 
     return path, states, deltas, psi
 
 
-def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, bint maternal=True, double r=1e-8, double a=1e-2, double pi0=0.8, double std_dev=0.2, double obs_err=0.0):
-    """Helper function for optimization for forward algorithm in the duo setting."""
+def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, bint maternal=True, double r=1e-8, double a=1e-2, double pi0=0.8, double std_dev=0.2, double obs_err=0.0, double mcc=0.0, double delta=0.0):
+    """Helper function for optimization for forward algorithm in the duo setting.
+
+    mcc is the fraction of maternal cells in the sample and delta the sample-level
+    LRR offset; at mcc = 0 and delta = 0 the emissions are the uncontaminated ones.
+    """
     cdef int i, j, idx, n, m
     cdef float di, f
     cdef int obs_h0, obs_h1
@@ -1124,12 +1128,17 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
                     if maternal:
                         m_ij = mat_dosage(obs_g, states[j])
                         p_ij = pat_dosage(x, states[j])
+                        mg_ij = obs_g[0] + obs_g[1]
                     else:
                         m_ij = mat_dosage(x, states[j])
                         p_ij = pat_dosage(obs_g, states[j])
+                        mg_ij = x[0] + x[1]
                     components.append(
-                        emission_baf(bafs[0], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j])
-                        + emission_lrr(lrrs[0], k=ks[j], std_dev=sigmas[0]) + log(w_o) + log(p)
+                        emission_baf_mcc(
+                            bafs[0], m_ij, p_ij, mg_ij, f=mcc, pi0=pi0, std_dev=std_dev, k=ks[j],
+                        )
+                        + emission_lrr_mcc(lrrs[0], k=ks[j], f=mcc, delta=delta, std_dev=sigmas[0])
+                        + log(w_o) + log(p)
                     )
             alphas[j, 0] += logsumexp(np.array(components, dtype=np.float64))
         else:
@@ -1138,12 +1147,16 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
                 if maternal:
                     m_ij = mat_dosage(haps[:, 0], states[j])
                     p_ij = pat_dosage(x, states[j])
+                    mg_ij = haps[0, 0] + haps[1, 0]
                 else:
                     m_ij = mat_dosage(x, states[j])
                     p_ij = pat_dosage(haps[:, 0], states[j])
-                cur_emission[idx] = emission_baf(
-                        bafs[0], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j],
-                    ) + emission_lrr(lrrs[0], k=ks[j], std_dev=sigmas[0]) + log(p)
+                    mg_ij = x[0] + x[1]
+                cur_emission[idx] = emission_baf_mcc(
+                        bafs[0], m_ij, p_ij, mg_ij, f=mcc, pi0=pi0, std_dev=std_dev, k=ks[j],
+                    ) + emission_lrr_mcc(
+                        lrrs[0], k=ks[j], f=mcc, delta=delta, std_dev=sigmas[0],
+                    ) + log(p)
             alphas[j, 0] += logsumexp(cur_emission)
     scaler = np.zeros(n)
     scaler[0] = logsumexp(alphas[:, 0])
@@ -1176,12 +1189,17 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
                         if maternal:
                             m_ij = mat_dosage(obs_g, states[j])
                             p_ij = pat_dosage(x, states[j])
+                            mg_ij = obs_g[0] + obs_g[1]
                         else:
                             m_ij = mat_dosage(x, states[j])
                             p_ij = pat_dosage(obs_g, states[j])
+                            mg_ij = x[0] + x[1]
                         components.append(
-                            emission_baf(bafs[i], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j])
-                            + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i]) + log(w_o) + log(p)
+                            emission_baf_mcc(
+                                bafs[i], m_ij, p_ij, mg_ij, f=mcc, pi0=pi0, std_dev=std_dev, k=ks[j],
+                            )
+                            + emission_lrr_mcc(lrrs[i], k=ks[j], f=mcc, delta=delta, std_dev=sigmas[i])
+                            + log(w_o) + log(p)
                         )
                 alphas[j, i] = logsumexp(np.array(components, dtype=np.float64)) + logsumexp(A_hat[:, j] + alphas[:, (i - 1)])
             else:
@@ -1190,20 +1208,27 @@ def forward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, b
                     if maternal:
                         m_ij = mat_dosage(haps[:, i], states[j])
                         p_ij = pat_dosage(x, states[j])
+                        mg_ij = haps[0, i] + haps[1, i]
                     else:
                         m_ij = mat_dosage(x, states[j])
                         p_ij = pat_dosage(haps[:, i], states[j])
-                    cur_emission[idx] = emission_baf(
-                            bafs[i], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j],
-                        ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i]) + log(p)
+                        mg_ij = x[0] + x[1]
+                    cur_emission[idx] = emission_baf_mcc(
+                            bafs[i], m_ij, p_ij, mg_ij, f=mcc, pi0=pi0, std_dev=std_dev, k=ks[j],
+                        ) + emission_lrr_mcc(
+                            lrrs[i], k=ks[j], f=mcc, delta=delta, std_dev=sigmas[i],
+                        ) + log(p)
                 alphas[j, i] = logsumexp(cur_emission) + logsumexp(A_hat[:, j] + alphas[:, (i - 1)])
         scaler[i] = logsumexp(alphas[:, i])
         alphas[:, i] -= scaler[i]
     return alphas, scaler, states, None, sum(scaler)
 
 
-def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, bint maternal=True, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, double obs_err=0.0):
-    """Helper function for backward algorithm loop-optimization."""
+def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, bint maternal=True, double r=1e-8, double a=1e-2, double pi0=0.2, double std_dev=0.25, double obs_err=0.0, double mcc=0.0, double delta=0.0):
+    """Helper function for backward algorithm loop-optimization.
+
+    mcc and delta are as in forward_algo_duo.
+    """
     cdef int i, j, idx, n, m
     cdef float di, f
     cdef int obs_h0, obs_h1
@@ -1248,12 +1273,17 @@ def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, 
                         if maternal:
                             m_ij = mat_dosage(obs_g, states[j])
                             p_ij = pat_dosage(x, states[j])
+                            mg_ij = obs_g[0] + obs_g[1]
                         else:
                             m_ij = mat_dosage(x, states[j])
                             p_ij = pat_dosage(obs_g, states[j])
+                            mg_ij = x[0] + x[1]
                         components.append(
-                            emission_baf(bafs[i+1], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j])
-                            + emission_lrr(lrrs[i+1], k=ks[j], std_dev=sigmas[i+1]) + log(w_o) + log(p)
+                            emission_baf_mcc(
+                                bafs[i+1], m_ij, p_ij, mg_ij, f=mcc, pi0=pi0, std_dev=std_dev, k=ks[j],
+                            )
+                            + emission_lrr_mcc(lrrs[i+1], k=ks[j], f=mcc, delta=delta, std_dev=sigmas[i+1])
+                            + log(w_o) + log(p)
                         )
                 cur_emissions[j] = logsumexp(np.array(components, dtype=np.float64))
             else:
@@ -1262,12 +1292,16 @@ def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, 
                     if maternal:
                         m_ij = mat_dosage(haps[:, i+1], states[j])
                         p_ij = pat_dosage(x, states[j])
+                        mg_ij = haps[0, i+1] + haps[1, i+1]
                     else:
                         m_ij = mat_dosage(x, states[j])
                         p_ij = pat_dosage(haps[:, i+1], states[j])
-                    cur_emission[idx] = emission_baf(
-                            bafs[i+1], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j],
-                        ) + emission_lrr(lrrs[i+1], k=ks[j], std_dev=sigmas[i+1]) + log(p)
+                        mg_ij = x[0] + x[1]
+                    cur_emission[idx] = emission_baf_mcc(
+                            bafs[i+1], m_ij, p_ij, mg_ij, f=mcc, pi0=pi0, std_dev=std_dev, k=ks[j],
+                        ) + emission_lrr_mcc(
+                            lrrs[i+1], k=ks[j], f=mcc, delta=delta, std_dev=sigmas[i+1],
+                        ) + log(p)
                 cur_emissions[j] = logsumexp(cur_emission)
         for j in range(m):
             betas[j, i] = logsumexp(A_hat[j, :] + cur_emissions + betas[:, (i + 1)])
@@ -1297,12 +1331,17 @@ def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, 
                             if maternal:
                                 m_ij = mat_dosage(obs_g, states[j])
                                 p_ij = pat_dosage(x, states[j])
+                                mg_ij = obs_g[0] + obs_g[1]
                             else:
                                 m_ij = mat_dosage(x, states[j])
                                 p_ij = pat_dosage(obs_g, states[j])
+                                mg_ij = x[0] + x[1]
                             components.append(
-                                emission_baf(bafs[i], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j])
-                                + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i]) + log(w_o) + log(p)
+                                emission_baf_mcc(
+                                    bafs[i], m_ij, p_ij, mg_ij, f=mcc, pi0=pi0, std_dev=std_dev, k=ks[j],
+                                )
+                                + emission_lrr_mcc(lrrs[i], k=ks[j], f=mcc, delta=delta, std_dev=sigmas[i])
+                                + log(w_o) + log(p)
                             )
                     cur_emissions_j = logsumexp(np.array(components, dtype=np.float64))
                 else:
@@ -1311,12 +1350,16 @@ def backward_algo_duo(bafs, lrrs, sigmas, pos, haps, freqs, states, karyotypes, 
                         if maternal:
                             m_ij = mat_dosage(haps[:, i], states[j])
                             p_ij = pat_dosage(x, states[j])
+                            mg_ij = haps[0, i] + haps[1, i]
                         else:
                             m_ij = mat_dosage(x, states[j])
                             p_ij = pat_dosage(haps[:, i], states[j])
-                        cur_emission[idx] = emission_baf(
-                                bafs[i], m_ij, p_ij, pi0=pi0, std_dev=std_dev, k=ks[j],
-                            ) + emission_lrr(lrrs[i], k=ks[j], std_dev=sigmas[i]) + log(p)
+                            mg_ij = x[0] + x[1]
+                        cur_emission[idx] = emission_baf_mcc(
+                                bafs[i], m_ij, p_ij, mg_ij, f=mcc, pi0=pi0, std_dev=std_dev, k=ks[j],
+                            ) + emission_lrr_mcc(
+                                lrrs[i], k=ks[j], f=mcc, delta=delta, std_dev=sigmas[i],
+                            ) + log(p)
                     cur_emissions_j = logsumexp(cur_emission)
                 betas[j, i] += log(1/m) + cur_emissions_j
         scaler[i] = logsumexp(betas[:, i])

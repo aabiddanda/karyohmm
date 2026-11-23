@@ -2475,6 +2475,8 @@ class PocHMM(MetaHMM):
         a=1e-2,
         unphased=False,
         obs_err=0.0,
+        mcc=0.0,
+        delta=0.0,
     ):
         """Forward algorithm for duos.
 
@@ -2506,6 +2508,10 @@ class PocHMM(MetaHMM):
             Run the model in unphased mode.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Sample-level LRR offset from array normalisation.
 
         Returns
         -------
@@ -2536,6 +2542,7 @@ class PocHMM(MetaHMM):
         assert r < 0.5 and r > 0
         assert a < 0.5 and a > 0
         assert 0.0 <= obs_err < 0.5
+        assert 0.0 <= mcc < 1.0
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
@@ -2555,6 +2562,8 @@ class PocHMM(MetaHMM):
             pi0=pi0,
             std_dev=std_dev,
             obs_err=obs_err,
+            mcc=mcc,
+            delta=delta,
         )
         return alphas, scaler, self.states, self.karyotypes, loglik
 
@@ -2573,6 +2582,8 @@ class PocHMM(MetaHMM):
         a=1e-2,
         unphased=False,
         obs_err=0.0,
+        mcc=0.0,
+        delta=0.0,
     ):
         """Backward algorithm for duos.
 
@@ -2604,6 +2615,10 @@ class PocHMM(MetaHMM):
             Run the model in unphased mode.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Sample-level LRR offset from array normalisation.
 
         Returns
         -------
@@ -2634,6 +2649,7 @@ class PocHMM(MetaHMM):
         assert r < 0.5 and r > 0
         assert a < 0.5 and a > 0
         assert 0.0 <= obs_err < 0.5
+        assert 0.0 <= mcc < 1.0
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
@@ -2653,6 +2669,8 @@ class PocHMM(MetaHMM):
             pi0=pi0,
             std_dev=std_dev,
             obs_err=obs_err,
+            mcc=mcc,
+            delta=delta,
         )
         return betas, scaler, self.states, self.karyotypes, loglik
 
@@ -2671,6 +2689,8 @@ class PocHMM(MetaHMM):
         a=1e-2,
         unphased=False,
         obs_err=0.0,
+        mcc=0.0,
+        delta=0.0,
     ):
         """Forward-backward algorithm for duos.
 
@@ -2702,6 +2722,10 @@ class PocHMM(MetaHMM):
             Run the model in unphased mode.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Sample-level LRR offset from array normalisation.
 
         Returns
         -------
@@ -2727,6 +2751,8 @@ class PocHMM(MetaHMM):
             a=a,
             unphased=unphased,
             obs_err=obs_err,
+            mcc=mcc,
+            delta=delta,
         )
         betas, _, _, _, _ = self.backward_algorithm(
             bafs,
@@ -2742,6 +2768,8 @@ class PocHMM(MetaHMM):
             a=a,
             unphased=unphased,
             obs_err=obs_err,
+            mcc=mcc,
+            delta=delta,
         )
         gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
         return gammas, states, karyotypes
