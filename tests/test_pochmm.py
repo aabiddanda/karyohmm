@@ -415,18 +415,18 @@ data_mcc_1p = pgt_sim.full_ploidy_sim(
 def test_pochmm_fwd_bwd_mcc(maternal, obs_err, mcc, delta):
     """Forward and backward log-likelihoods agree under contamination and an LRR offset."""
     data = data_mat_trisomy
-    kwargs = dict(
-        bafs=data["baf"],
-        lrrs=data["lrr"],
-        sigmas=data["sigmas"],
-        pos=data["pos"],
-        haps=data["mat_haps"] if maternal else data["pat_haps"],
-        freqs=data["af"],
-        maternal=maternal,
-        obs_err=obs_err,
-        mcc=mcc,
-        delta=delta,
-    )
+    kwargs = {
+        "bafs": data["baf"],
+        "lrrs": data["lrr"],
+        "sigmas": data["sigmas"],
+        "pos": data["pos"],
+        "haps": data["mat_haps"] if maternal else data["pat_haps"],
+        "freqs": data["af"],
+        "maternal": maternal,
+        "obs_err": obs_err,
+        "mcc": mcc,
+        "delta": delta,
+    }
     pochmm = PocHMM()
     _, _, _, _, loglik = pochmm.forward_algorithm(**kwargs)
     _, _, _, _, loglik2 = pochmm.backward_algorithm(**kwargs)
@@ -439,18 +439,22 @@ def test_pochmm_fwd_bwd_mcc(maternal, obs_err, mcc, delta):
 def test_pochmm_lrr_offset(shift):
     """Shifting every LRR by -delta and setting the offset to delta leaves the likelihood unchanged."""
     data = data_mat_trisomy
-    kwargs = dict(
-        bafs=data["baf"],
-        sigmas=data["sigmas"],
-        pos=data["pos"],
-        haps=data["mat_haps"],
-        freqs=data["af"],
-        mcc=0.1,
-    )
+    kwargs = {
+        "bafs": data["baf"],
+        "sigmas": data["sigmas"],
+        "pos": data["pos"],
+        "haps": data["mat_haps"],
+        "freqs": data["af"],
+        "mcc": 0.1,
+    }
     pochmm = PocHMM()
     *_, base = pochmm.forward_algorithm(lrrs=data["lrr"], delta=0.0, **kwargs)
-    *_, offset = pochmm.forward_algorithm(lrrs=data["lrr"] - shift, delta=shift, **kwargs)
-    *_, unmatched = pochmm.forward_algorithm(lrrs=data["lrr"] - shift, delta=0.0, **kwargs)
+    *_, offset = pochmm.forward_algorithm(
+        lrrs=data["lrr"] - shift, delta=shift, **kwargs
+    )
+    *_, unmatched = pochmm.forward_algorithm(
+        lrrs=data["lrr"] - shift, delta=0.0, **kwargs
+    )
     assert np.isclose(base, offset)
     assert unmatched < base
 
@@ -459,16 +463,16 @@ def test_pochmm_mcc_rescues_paternal_monosomy():
     """With BAF alone, 30% MCC makes 1p look like 3p unless the model accounts for it."""
     data = data_mcc_1p
     m = data["baf"].size
-    kwargs = dict(
-        bafs=data["baf"],
-        lrrs=np.full(m, -9.0),
-        sigmas=np.ones(m),
-        pos=data["pos"],
-        haps=data["mat_haps"],
-        freqs=data["af"],
-        pi0=0.3,
-        std_dev=0.12,
-    )
+    kwargs = {
+        "bafs": data["baf"],
+        "lrrs": np.full(m, -9.0),
+        "sigmas": np.ones(m),
+        "pos": data["pos"],
+        "haps": data["mat_haps"],
+        "freqs": data["af"],
+        "pi0": 0.3,
+        "std_dev": 0.12,
+    }
     pochmm = PocHMM()
     naive = pochmm.posterior_karyotypes(*pochmm.forward_backward(**kwargs)[::2])
     aware = pochmm.posterior_karyotypes(
@@ -497,14 +501,14 @@ def sim_genome(fraction, plan, m=500, use_lrr=True, delta=0.0, seed=20):
         )
         for i, (ploidy, skew) in enumerate(plan)
     ]
-    return dict(
-        bafs=[c["baf"] for c in chroms],
-        lrrs=[c["lrr"] if use_lrr else np.full(m, -9.0) for c in chroms],
-        sigmas=[c["sigmas"] if use_lrr else np.ones(m) for c in chroms],
-        pos=[c["pos"] for c in chroms],
-        haps=[c["mat_haps"] for c in chroms],
-        freqs=[c["af"] for c in chroms],
-    )
+    return {
+        "bafs": [c["baf"] for c in chroms],
+        "lrrs": [c["lrr"] if use_lrr else np.full(m, -9.0) for c in chroms],
+        "sigmas": [c["sigmas"] if use_lrr else np.ones(m) for c in chroms],
+        "pos": [c["pos"] for c in chroms],
+        "haps": [c["mat_haps"] for c in chroms],
+        "freqs": [c["af"] for c in chroms],
+    }
 
 
 # Three disomic chromosomes and one maternal trisomy.

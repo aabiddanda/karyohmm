@@ -2353,18 +2353,19 @@ class PocHMM(MetaHMM):
     Extends :class:`MetaHMM` to handle mother–child or father–child duos in which
     only one parent's haplotypes are available.  The unobserved parent's genotype is
     marginalised out at each site using population allele frequencies supplied as
-    ``freqs``.  When ``freqs`` is ``None`` the model treats every unobserved-parent
-    site as a 50 / 50 heterozygote.
+    ``freqs``.  When ``freqs`` is ``None`` the forward and backward passes give
+    the three unobserved-parent genotypes equal prior weight at every site.
 
-    The forward, backward, and Viterbi algorithms are re-implemented here via a
-    dedicated Cython kernel (``forward_algo_duo`` / ``backward_algo_duo``) that
-    handles the marginalisation efficiently.
+    The forward and backward algorithms are re-implemented here via a dedicated
+    Cython kernel (``forward_algo_duo`` / ``backward_algo_duo``) that handles the
+    marginalisation efficiently.  The inherited Viterbi algorithm expects both
+    parents' haplotypes and does not apply to duos.
 
     Parameters
     ----------
     disomy : bool, optional
-        Restrict the state space to disomy (ignored in current implementation;
-        the full MetaHMM state space is always used).  Default ``False``.
+        Restrict the state space to disomy-only, as in :class:`MetaHMM`.
+        Default ``False``.
     upd : bool, optional
         Add uniparental disomy states to the state space.  As with
         :class:`MetaHMM`, LRR data helps distinguish UPD from normal disomy.
@@ -2417,6 +2418,8 @@ class PocHMM(MetaHMM):
             Bounds for acceptable values of pi0 parameter.
         sigma_bounds : tuple
             Bounds for acceptable values for sigma.
+        **kwargs
+            Passed to :meth:`forward_algorithm`.
 
         Returns
         -------
@@ -2503,9 +2506,9 @@ class PocHMM(MetaHMM):
         r : float
             Intra-karyotype transition rate (recombination).
         a : float
-            Inter-karyotype transition rate.
+            Scale on ``r`` giving the inter-karyotype transition rate.
         unphased : bool
-            Run the model in unphased mode.
+            Unused; kept for signature compatibility with :class:`MetaHMM`.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
         mcc : float
@@ -2524,7 +2527,7 @@ class PocHMM(MetaHMM):
         karyotypes : np.ndarray
             Array of karyotypes in the MetaHMM model.
         loglik : float
-            Total log-likelihood of B-allele frequency.
+            Total log-likelihood of the BAF and LRR data.
 
         """
         assert bafs.ndim == 1
@@ -2610,9 +2613,9 @@ class PocHMM(MetaHMM):
         r : float
             Intra-karyotype transition rate (recombination).
         a : float
-            Inter-karyotype transition rate.
+            Scale on ``r`` giving the inter-karyotype transition rate.
         unphased : bool
-            Run the model in unphased mode.
+            Unused; kept for signature compatibility with :class:`MetaHMM`.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
         mcc : float
@@ -2631,7 +2634,7 @@ class PocHMM(MetaHMM):
         karyotypes : np.ndarray
             Array of karyotypes in the MetaHMM model.
         loglik : float
-            Total log-likelihood of B-allele frequency.
+            Total log-likelihood of the BAF and LRR data.
 
         """
         assert bafs.ndim == 1
@@ -2717,9 +2720,9 @@ class PocHMM(MetaHMM):
         r : float
             Intra-karyotype transition rate (recombination).
         a : float
-            Inter-karyotype transition rate.
+            Scale on ``r`` giving the inter-karyotype transition rate.
         unphased : bool
-            Run the model in unphased mode.
+            Unused; kept for signature compatibility with :class:`MetaHMM`.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
         mcc : float
@@ -2820,6 +2823,8 @@ class PocHMM(MetaHMM):
             Fraction of maternal cells contaminating the sample.
         delta : float
             Sample-level LRR offset.
+        **kwargs
+            Passed to :meth:`forward_algorithm`.
 
         Returns
         -------
@@ -2872,8 +2877,7 @@ class PocHMM(MetaHMM):
 
         Given the copy-number posteriors from forward-backward, the LRR term is
         Gaussian in the offset, so the M-step is the precision-weighted mean
-        residual between the expected and observed LRR.  Arguments are as in
-        :meth:`genome_loglik`.
+        residual between the expected and observed LRR.
 
         Parameters
         ----------
@@ -2893,6 +2897,8 @@ class PocHMM(MetaHMM):
             Maximum number of EM iterations.
         tol : float
             Stop once the offset changes by less than this.
+        **kwargs
+            Passed to :meth:`forward_backward`.
 
         Returns
         -------
@@ -2944,8 +2950,18 @@ class PocHMM(MetaHMM):
             if converged:
                 break
         loglik = self.genome_loglik(
-            bafs, lrrs, sigmas, pos, haps, freqs, maternal=maternal, pi0=pi0,
-            std_dev=std_dev, mcc=mcc, delta=delta, **kwargs,
+            bafs,
+            lrrs,
+            sigmas,
+            pos,
+            haps,
+            freqs,
+            maternal=maternal,
+            pi0=pi0,
+            std_dev=std_dev,
+            mcc=mcc,
+            delta=delta,
+            **kwargs,
         )
         return delta, loglik
 
@@ -2994,6 +3010,9 @@ class PocHMM(MetaHMM):
             Number of evenly spaced grid points over ``mcc_bounds``.
         alpha : float
             The interval has asymptotic coverage 1 - alpha.
+        **kwargs
+            Passed to :meth:`genome_loglik` (or :meth:`est_delta` when the
+            offset is inferred).
 
         Returns
         -------
@@ -3033,10 +3052,14 @@ class PocHMM(MetaHMM):
         j = int(np.argmax(grid_ll))
         lo, hi = grid[max(j - 1, 0)], grid[min(j + 1, n_grid - 1)]
         opt = minimize_scalar(
-            lambda f: -profile(f), bounds=(lo, hi), method="bounded",
+            lambda f: -profile(f),
+            bounds=(lo, hi),
+            method="bounded",
             options={"xatol": 1e-3},
         )
-        mcc_hat, ll_hat = (opt.x, -opt.fun) if -opt.fun > grid_ll[j] else (grid[j], grid_ll[j])
+        mcc_hat, ll_hat = (
+            (opt.x, -opt.fun) if -opt.fun > grid_ll[j] else (grid[j], grid_ll[j])
+        )
         threshold = ll_hat - chi2.ppf(1.0 - alpha, df=1) / 2.0
 
         def bound(side):
@@ -3047,26 +3070,35 @@ class PocHMM(MetaHMM):
                 return mcc_bounds[0] if side < 0 else mcc_bounds[1]
             edge = grid[below.max()] if side < 0 else grid[below.min()]
             return brentq(
-                lambda f: profile(f) - threshold, min(edge, mcc_hat), max(edge, mcc_hat),
+                lambda f: profile(f) - threshold,
+                min(edge, mcc_hat),
+                max(edge, mcc_hat),
                 xtol=1e-3,
             )
 
         mcc_ci = (bound(-1), bound(1))
         if infer_delta:
             delta, ll_hat = self.est_delta(
-                bafs, lrrs, sigmas, pos, haps, freqs, mcc=mcc_hat,
-                delta=deltas[min(deltas, key=lambda g: abs(g - mcc_hat))], **shared
+                bafs,
+                lrrs,
+                sigmas,
+                pos,
+                haps,
+                freqs,
+                mcc=mcc_hat,
+                delta=deltas[min(deltas, key=lambda g: abs(g - mcc_hat))],
+                **shared,
             )
-        return dict(
-            mcc=float(mcc_hat),
-            mcc_ci=(float(mcc_ci[0]), float(mcc_ci[1])),
-            delta=float(delta),
-            pi0=float(pi0),
-            std_dev=float(std_dev),
-            loglik=float(ll_hat),
-            grid=grid,
-            grid_loglik=grid_ll,
-        )
+        return {
+            "mcc": float(mcc_hat),
+            "mcc_ci": (float(mcc_ci[0]), float(mcc_ci[1])),
+            "delta": float(delta),
+            "pi0": float(pi0),
+            "std_dev": float(std_dev),
+            "loglik": float(ll_hat),
+            "grid": grid,
+            "grid_loglik": grid_ll,
+        }
 
     def call_genome(
         self,
@@ -3097,10 +3129,23 @@ class PocHMM(MetaHMM):
 
         """
         res = self.est_mcc_genome(
-            bafs, lrrs, sigmas, pos, haps, freqs, maternal=maternal, pi0=pi0,
-            std_dev=std_dev, delta=delta, **kwargs,
+            bafs,
+            lrrs,
+            sigmas,
+            pos,
+            haps,
+            freqs,
+            maternal=maternal,
+            pi0=pi0,
+            std_dev=std_dev,
+            delta=delta,
+            **kwargs,
         )
-        fb_kwargs = {k: v for k, v in kwargs.items() if k not in ("mcc_bounds", "n_grid", "alpha")}
+        fb_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k not in ("mcc_bounds", "n_grid", "alpha")
+        }
         n = len(bafs)
         if freqs is None:
             freqs = [None] * n
@@ -3142,7 +3187,8 @@ class PocHMM(MetaHMM):
 
         For each site integrates the BAF and LRR likelihood over all four possible
         unobserved-parent genotypes (AA, AB, BA, BB), weighted by Hardy-Weinberg
-        priors from ``freqs`` and the HMM posterior ``gammas``.
+        priors from ``freqs`` and the HMM posterior ``gammas``.  The emissions
+        assume an uncontaminated sample with no LRR offset.
 
         Parameters
         ----------
@@ -3321,6 +3367,7 @@ class PocHMM(MetaHMM):
         va = np.array(valid_anchors)
 
         def af(anchor_site, query_site):
+            """Alt allele frequency at query_site among the haplotypes tagged at anchor_site."""
             return float(hap_matrix[tagged[anchor_site], query_site].mean())
 
         freqs = np.empty(m)
