@@ -2774,6 +2774,358 @@ class PocHMM(MetaHMM):
         gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
         return gammas, states, karyotypes
 
+    def genome_loglik(
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        pos,
+        haps,
+        freqs=None,
+        maternal=True,
+        pi0=0.2,
+        std_dev=0.25,
+        mcc=0.0,
+        delta=0.0,
+        **kwargs,
+    ):
+        """Total log-likelihood of a sample across chromosomes at a shared contamination fraction.
+
+        Each argument from ``bafs`` to ``freqs`` is a list with one entry per
+        chromosome, in the form :meth:`forward_algorithm` takes for one
+        chromosome. Every chromosome's likelihood is marginalised over all
+        karyotypes, so aneuploid chromosomes need no special treatment.
+
+        Parameters
+        ----------
+        bafs : list of np.ndarray
+            Per-chromosome B-allele frequencies.
+        lrrs : list of np.ndarray
+            Per-chromosome log-R ratios (-9 marks a missing value).
+        sigmas : list of np.ndarray
+            Per-chromosome per-probe LRR standard deviations.
+        pos : list of np.ndarray
+            Per-chromosome basepair positions.
+        haps : list of np.ndarray
+            Per-chromosome 2 x m haplotypes of the observed parent.
+        freqs : list of np.ndarray or None
+            Per-chromosome allele frequencies for the unobserved parent.
+        maternal : bool
+            If True, haps are maternal haplotypes; otherwise paternal.
+        pi0 : float
+            Point-mass weight of the BAF emission, shared across chromosomes.
+        std_dev : float
+            BAF noise, shared across chromosomes.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Sample-level LRR offset.
+
+        Returns
+        -------
+        loglik : float
+            Sum of the per-chromosome forward log-likelihoods.
+
+        """
+        n = len(bafs)
+        assert len(lrrs) == n and len(sigmas) == n
+        assert len(pos) == n and len(haps) == n
+        if freqs is None:
+            freqs = [None] * n
+        assert len(freqs) == n
+        return sum(
+            self.forward_algorithm(
+                bafs=bafs[i],
+                lrrs=lrrs[i],
+                sigmas=sigmas[i],
+                pos=pos[i],
+                haps=haps[i],
+                freqs=freqs[i],
+                maternal=maternal,
+                pi0=pi0,
+                std_dev=std_dev,
+                mcc=mcc,
+                delta=delta,
+                **kwargs,
+            )[4]
+            for i in range(n)
+        )
+
+    def est_delta(
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        pos,
+        haps,
+        freqs=None,
+        maternal=True,
+        pi0=0.2,
+        std_dev=0.25,
+        mcc=0.0,
+        delta=0.0,
+        max_iter=20,
+        tol=1e-4,
+        **kwargs,
+    ):
+        """Estimate the sample-level LRR offset by expectation-maximization at a fixed contamination fraction.
+
+        Given the copy-number posteriors from forward-backward, the LRR term is
+        Gaussian in the offset, so the M-step is the precision-weighted mean
+        residual between the expected and observed LRR.  Arguments are as in
+        :meth:`genome_loglik`.
+
+        Parameters
+        ----------
+        bafs, lrrs, sigmas, pos, haps, freqs : list
+            Per-chromosome inputs, as in :meth:`genome_loglik`.
+        maternal : bool
+            If True, haps are maternal haplotypes; otherwise paternal.
+        pi0 : float
+            Point-mass weight of the BAF emission.
+        std_dev : float
+            BAF noise.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Starting value of the offset.
+        max_iter : int
+            Maximum number of EM iterations.
+        tol : float
+            Stop once the offset changes by less than this.
+
+        Returns
+        -------
+        delta : float
+            Estimated LRR offset.
+        loglik : float
+            Total log-likelihood at the estimated offset.
+
+        """
+        assert max_iter > 0
+        n = len(bafs)
+        if freqs is None:
+            freqs = [None] * n
+        ks = np.array([sum(s >= 0 for s in state) for state in self.states])
+        uniq_ks = np.unique(ks)
+        # Expected LRR for each copy number in a contaminated sample, before the offset.
+        ratio = ((1.0 - mcc) * uniq_ks + 2.0 * mcc) / 2.0
+        mus = np.where(ratio <= 0.125, -3.0, np.log2(np.maximum(ratio, 0.125)))
+        for _ in range(max_iter):
+            num, den = 0.0, 0.0
+            for i in range(n):
+                gammas, _, _ = self.forward_backward(
+                    bafs=bafs[i],
+                    lrrs=lrrs[i],
+                    sigmas=sigmas[i],
+                    pos=pos[i],
+                    haps=haps[i],
+                    freqs=freqs[i],
+                    maternal=maternal,
+                    pi0=pi0,
+                    std_dev=std_dev,
+                    mcc=mcc,
+                    delta=delta,
+                    **kwargs,
+                )
+                post = np.exp(gammas)
+                # Posterior mass on each copy number at every site.
+                post_k = np.vstack([post[ks == k].sum(axis=0) for k in uniq_ks])
+                obs = lrrs[i] != -9
+                w = post_k[:, obs] / sigmas[i][obs] ** 2
+                num += np.sum(w * (mus[:, None] - lrrs[i][obs]))
+                den += np.sum(w)
+            if den == 0.0:
+                warnings.warn("No observed LRR values; the offset is left unchanged.")
+                break
+            new_delta = num / den
+            converged = abs(new_delta - delta) < tol
+            delta = new_delta
+            if converged:
+                break
+        loglik = self.genome_loglik(
+            bafs, lrrs, sigmas, pos, haps, freqs, maternal=maternal, pi0=pi0,
+            std_dev=std_dev, mcc=mcc, delta=delta, **kwargs,
+        )
+        return delta, loglik
+
+    def est_mcc_genome(
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        pos,
+        haps,
+        freqs=None,
+        maternal=True,
+        pi0=None,
+        std_dev=None,
+        delta=0.0,
+        mcc_bounds=(0.0, 0.5),
+        n_grid=11,
+        alpha=0.05,
+        **kwargs,
+    ):
+        """Estimate the maternal cell contamination fraction jointly across chromosomes.
+
+        Maximises :meth:`genome_loglik` over a grid of contamination fractions,
+        refines the best grid point with a bounded scalar search, and reports
+        a likelihood-ratio interval.  BAF noise and the point-mass weight are
+        shared across chromosomes; when not given they are estimated from the
+        pooled BAF with :meth:`est_sigma_pi0_baf`.
+
+        Parameters
+        ----------
+        bafs, lrrs, sigmas, pos, haps, freqs : list
+            Per-chromosome inputs, as in :meth:`genome_loglik`.
+        maternal : bool
+            If True, haps are maternal haplotypes; otherwise paternal.
+        pi0 : float or None
+            Point-mass weight of the BAF emission; estimated when None.
+        std_dev : float or None
+            BAF noise; estimated when None.
+        delta : float or None
+            LRR offset.  Fixed at the given value (0 for LRR relative to a
+            diploid reference), or estimated at every fraction by
+            :meth:`est_delta` when None.
+        mcc_bounds : tuple
+            Range of contamination fractions searched.
+        n_grid : int
+            Number of evenly spaced grid points over ``mcc_bounds``.
+        alpha : float
+            The interval has asymptotic coverage 1 - alpha.
+
+        Returns
+        -------
+        res : dict
+            ``mcc`` (estimate), ``mcc_ci`` (interval), ``delta``, ``pi0``,
+            ``std_dev``, ``loglik`` (at the estimate), and ``grid`` /
+            ``grid_loglik`` (the profile over the grid).
+
+        """
+        assert len(mcc_bounds) == 2
+        assert 0.0 <= mcc_bounds[0] < mcc_bounds[1] < 1.0
+        assert n_grid >= 3
+        assert 0.0 < alpha < 1.0
+        if (pi0 is None) or (std_dev is None):
+            pi0_est, sigma_est = self.est_sigma_pi0_baf(np.concatenate(bafs))
+            pi0 = pi0_est if pi0 is None else pi0
+            std_dev = sigma_est if std_dev is None else std_dev
+        infer_delta = delta is None
+        shared = dict(maternal=maternal, pi0=pi0, std_dev=std_dev, **kwargs)
+        deltas = {}
+
+        def profile(f):
+            """Log-likelihood at fraction f, maximised over the offset when it is inferred."""
+            if not infer_delta:
+                return self.genome_loglik(
+                    bafs, lrrs, sigmas, pos, haps, freqs, mcc=f, delta=delta, **shared
+                )
+            # Warm-start from the offset at the nearest fraction already evaluated.
+            start = deltas[min(deltas, key=lambda g: abs(g - f))] if deltas else 0.0
+            deltas[f], ll = self.est_delta(
+                bafs, lrrs, sigmas, pos, haps, freqs, mcc=f, delta=start, **shared
+            )
+            return ll
+
+        grid = np.linspace(mcc_bounds[0], mcc_bounds[1], n_grid)
+        grid_ll = np.array([profile(f) for f in grid])
+        j = int(np.argmax(grid_ll))
+        lo, hi = grid[max(j - 1, 0)], grid[min(j + 1, n_grid - 1)]
+        opt = minimize_scalar(
+            lambda f: -profile(f), bounds=(lo, hi), method="bounded",
+            options={"xatol": 1e-3},
+        )
+        mcc_hat, ll_hat = (opt.x, -opt.fun) if -opt.fun > grid_ll[j] else (grid[j], grid_ll[j])
+        threshold = ll_hat - chi2.ppf(1.0 - alpha, df=1) / 2.0
+
+        def bound(side):
+            """Interval endpoint on one side of the estimate, bracketed by the grid."""
+            idx = np.where((grid < mcc_hat) if side < 0 else (grid > mcc_hat))[0]
+            below = idx[grid_ll[idx] < threshold]
+            if below.size == 0:
+                return mcc_bounds[0] if side < 0 else mcc_bounds[1]
+            edge = grid[below.max()] if side < 0 else grid[below.min()]
+            return brentq(
+                lambda f: profile(f) - threshold, min(edge, mcc_hat), max(edge, mcc_hat),
+                xtol=1e-3,
+            )
+
+        mcc_ci = (bound(-1), bound(1))
+        if infer_delta:
+            delta, ll_hat = self.est_delta(
+                bafs, lrrs, sigmas, pos, haps, freqs, mcc=mcc_hat,
+                delta=deltas[min(deltas, key=lambda g: abs(g - mcc_hat))], **shared
+            )
+        return dict(
+            mcc=float(mcc_hat),
+            mcc_ci=(float(mcc_ci[0]), float(mcc_ci[1])),
+            delta=float(delta),
+            pi0=float(pi0),
+            std_dev=float(std_dev),
+            loglik=float(ll_hat),
+            grid=grid,
+            grid_loglik=grid_ll,
+        )
+
+    def call_genome(
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        pos,
+        haps,
+        freqs=None,
+        maternal=True,
+        pi0=None,
+        std_dev=None,
+        delta=0.0,
+        **kwargs,
+    ):
+        """Estimate contamination across chromosomes, then call each chromosome at that estimate.
+
+        Runs :meth:`est_mcc_genome` and then :meth:`forward_backward` on every
+        chromosome at the estimated fraction and offset.  Arguments are as in
+        :meth:`est_mcc_genome`; extra keyword arguments go to both.
+
+        Returns
+        -------
+        res : dict
+            The output of :meth:`est_mcc_genome`, plus ``posteriors`` (one
+            :meth:`posterior_karyotypes` dict per chromosome), ``calls`` (the
+            maximum-posterior karyotype per chromosome) and ``gammas``.
+
+        """
+        res = self.est_mcc_genome(
+            bafs, lrrs, sigmas, pos, haps, freqs, maternal=maternal, pi0=pi0,
+            std_dev=std_dev, delta=delta, **kwargs,
+        )
+        fb_kwargs = {k: v for k, v in kwargs.items() if k not in ("mcc_bounds", "n_grid", "alpha")}
+        n = len(bafs)
+        if freqs is None:
+            freqs = [None] * n
+        res["gammas"], res["posteriors"], res["calls"] = [], [], []
+        for i in range(n):
+            gammas, _, karyotypes = self.forward_backward(
+                bafs=bafs[i],
+                lrrs=lrrs[i],
+                sigmas=sigmas[i],
+                pos=pos[i],
+                haps=haps[i],
+                freqs=freqs[i],
+                maternal=maternal,
+                pi0=res["pi0"],
+                std_dev=res["std_dev"],
+                mcc=res["mcc"],
+                delta=res["delta"],
+                **fb_kwargs,
+            )
+            post = self.posterior_karyotypes(gammas, karyotypes)
+            res["gammas"].append(gammas)
+            res["posteriors"].append(post)
+            res["calls"].append(str(max(post, key=post.get)))
+        return res
+
     def genotype_parent(
         self,
         bafs,
