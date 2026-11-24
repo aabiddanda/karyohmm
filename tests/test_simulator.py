@@ -576,3 +576,18 @@ def test_sim_starting_haplotypes_random():
     starts = np.array(starts)
     assert 0 < starts.mean() < 1
     assert np.any(starts[:, 0] != starts[:, 1])
+
+
+def test_sim_ref_panel_rows_differ():
+    """Reference-panel rows are drawn independently and are reproducible from the seed."""
+    data = pgt_sim.full_ploidy_sim(m=500, ploidy=2, seed=3)
+    panel = pgt_sim.sim_haplotype_ref_panel(
+        data["mat_haps"], data["pos"], panel_size=50, seed=3
+    )
+    het = data["mat_haps"][0] != data["mat_haps"][1]
+    assert len({row.tobytes() for row in panel}) > 1
+    assert np.all((panel.mean(axis=0)[het] > 0) & (panel.mean(axis=0)[het] < 1))
+    again = pgt_sim.sim_haplotype_ref_panel(
+        data["mat_haps"], data["pos"], panel_size=50, seed=3
+    )
+    assert np.array_equal(panel, again)

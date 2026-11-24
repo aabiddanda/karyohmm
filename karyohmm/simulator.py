@@ -763,7 +763,7 @@ class PGTSimBase:
         for i in range(panel_size):
             # NOTE: this just shuffles up the current parental haplotypes ...
             _, _, sim_hap1, _, _ = self.sim_haplotype_paths(
-                mat_haps=haps, pat_haps=haps, pos=pos, ploidy=2, **kwargs
+                mat_haps=haps, pat_haps=haps, pos=pos, ploidy=2, seed=seed + i, **kwargs
             )
             ref_panel[i, :] = sim_hap1
         return ref_panel
