@@ -598,3 +598,27 @@ def test_call_genome_without_known_contamination():
     assert res["calls"] == ["2", "1p", "2", "3p"]
     assert abs(res["mcc"] - 0.3) < 0.03
     assert len(res["posteriors"]) == len(plan)
+
+
+def test_est_mcc_genome_thin_matches_thinned_input():
+    """thin=k gives the same fit as passing every k-th site directly."""
+    data = sim_genome(0.15, genome_plan, m=1000)
+    hmm = PocHMM()
+    res = hmm.est_mcc_genome(**data, thin=5)
+    thinned = {k: [x[..., ::5] for x in v] for k, v in data.items()}
+    ref = hmm.est_mcc_genome(**thinned)
+    assert res["thin"] == 5
+    assert np.isclose(res["mcc"], ref["mcc"])
+    assert np.isclose(res["loglik"], ref["loglik"])
+    assert abs(res["mcc"] - 0.15) < 0.03
+
+
+def test_call_genome_thin_calls_all_sites():
+    """call_genome estimates on thinned sites but calls every chromosome on all sites."""
+    plan = [(2, 0.5), (1, 1.0), (2, 0.5), (3, 0.0)]
+    data = sim_genome(0.3, plan, m=1000, use_lrr=False)
+    res = PocHMM().call_genome(**data, thin=4)
+    assert res["thin"] == 4
+    assert res["calls"] == ["2", "1p", "2", "3p"]
+    assert abs(res["mcc"] - 0.3) < 0.04
+    assert all(g.shape[1] == 1000 for g in res["gammas"])

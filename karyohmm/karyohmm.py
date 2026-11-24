@@ -2980,6 +2980,7 @@ class PocHMM(MetaHMM):
         mcc_bounds=(0.0, 0.5),
         n_grid=11,
         alpha=0.05,
+        thin=1,
         **kwargs,
     ):
         """Estimate the maternal cell contamination fraction jointly across chromosomes.
@@ -3010,6 +3011,11 @@ class PocHMM(MetaHMM):
             Number of evenly spaced grid points over ``mcc_bounds``.
         alpha : float
             The interval has asymptotic coverage 1 - alpha.
+        thin : int
+            Fit on every ``thin``-th site of each chromosome (1 uses all
+            sites).  Run time falls roughly in proportion.  In simulations,
+            ``thin=10`` kept the error in the estimate close to that from
+            all sites, but the interval was about three times wider.
         **kwargs
             Passed to :meth:`genome_loglik` (or :meth:`est_delta` when the
             offset is inferred).
@@ -3018,14 +3024,23 @@ class PocHMM(MetaHMM):
         -------
         res : dict
             ``mcc`` (estimate), ``mcc_ci`` (interval), ``delta``, ``pi0``,
-            ``std_dev``, ``loglik`` (at the estimate), and ``grid`` /
-            ``grid_loglik`` (the profile over the grid).
+            ``std_dev``, ``loglik`` (at the estimate, on the sites used),
+            ``grid`` / ``grid_loglik`` (the profile over the grid), and ``thin``.
 
         """
         assert len(mcc_bounds) == 2
         assert 0.0 <= mcc_bounds[0] < mcc_bounds[1] < 1.0
         assert n_grid >= 3
         assert 0.0 < alpha < 1.0
+        assert int(thin) == thin and thin >= 1
+        if thin > 1:
+            # Positions are kept, so transitions span the wider gaps between kept sites.
+            bafs, lrrs, sigmas, pos = (
+                [x[::thin] for x in v] for v in (bafs, lrrs, sigmas, pos)
+            )
+            haps = [h[:, ::thin] for h in haps]
+            if freqs is not None:
+                freqs = [None if f is None else f[::thin] for f in freqs]
         if (pi0 is None) or (std_dev is None):
             pi0_est, sigma_est = self.est_sigma_pi0_baf(np.concatenate(bafs))
             pi0 = pi0_est if pi0 is None else pi0
@@ -3098,6 +3113,7 @@ class PocHMM(MetaHMM):
             "loglik": float(ll_hat),
             "grid": grid,
             "grid_loglik": grid_ll,
+            "thin": int(thin),
         }
 
     def call_genome(
@@ -3112,6 +3128,7 @@ class PocHMM(MetaHMM):
         pi0=None,
         std_dev=None,
         delta=0.0,
+        thin=1,
         **kwargs,
     ):
         """Estimate contamination across chromosomes, then call each chromosome at that estimate.
@@ -3119,6 +3136,13 @@ class PocHMM(MetaHMM):
         Runs :meth:`est_mcc_genome` and then :meth:`forward_backward` on every
         chromosome at the estimated fraction and offset.  Arguments are as in
         :meth:`est_mcc_genome`; extra keyword arguments go to both.
+
+        Parameters
+        ----------
+        thin : int
+            Estimate the contamination on every ``thin``-th site (see
+            :meth:`est_mcc_genome`).  Chromosomes are always called on all
+            sites.
 
         Returns
         -------
@@ -3139,6 +3163,7 @@ class PocHMM(MetaHMM):
             pi0=pi0,
             std_dev=std_dev,
             delta=delta,
+            thin=thin,
             **kwargs,
         )
         fb_kwargs = {
