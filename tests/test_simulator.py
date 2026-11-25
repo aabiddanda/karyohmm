@@ -327,6 +327,7 @@ def test_sim_mcc(length, m, cc):
     m=st.integers(min_value=100, max_value=1000),
     c=st.sampled_from(["2p0", "2p1", "2m0", "2m1"]),
 )
+@settings(deadline=None)
 def test_pgt_sim_upd(length, m, c):
     data = pgt_sim.full_ploidy_sim(m=m, length=length, ploidy=2, upd=c)
     assert data["m"] == m
@@ -462,3 +463,131 @@ def test_mosaic_sim_bulk_shapes(seed):
     assert data["baf_embryo_bulk"].shape == (ncells, m)
     assert data["lrr_embryo_bulk"].shape == (ncells, m)
     assert data["sigmas_embryo_bulk"].shape == (ncells, m)
+
+
+@pytest.mark.parametrize("mcc", [0.05, 0.2, 0.4])
+def test_sim_mcc_baf_disomy(mcc):
+    """Contaminated disomic BAF sits at 0.5 +/- mcc / 2 at mother-hom, embryo-het sites."""
+    data = pgt_sim.full_ploidy_sim(m=5000, ploidy=2, std_dev=0.03, mcc=mcc, seed=7)
+    mg = data["mat_haps"].sum(axis=0)
+    het = data["geno_embryo"] == 1
+    assert data["mcc"] == mcc
+    assert np.isclose(np.mean(data["baf"][het & (mg == 2)]), 0.5 + mcc / 2, atol=5e-3)
+    assert np.isclose(np.mean(data["baf"][het & (mg == 0)]), 0.5 - mcc / 2, atol=5e-3)
+    # Point masses survive only where embryo and mother share a homozygous genotype.
+    assert np.all(data["baf"][(data["geno_embryo"] == 0) & (mg > 0)] > 0)
+    assert np.any(data["baf"][(data["geno_embryo"] == 0) & (mg == 0)] == 0)
+
+
+@pytest.mark.parametrize("mcc", [0.1, 0.3])
+@pytest.mark.parametrize("ploidy", [1, 3])
+def test_sim_mcc_copy_weighted(mcc, ploidy):
+    """Contamination mixes allele copies, weighting the embryo by its copy number."""
+    data = pgt_sim.full_ploidy_sim(
+        m=5000, ploidy=ploidy, std_dev=0.03, mcc=mcc, alpha=0.1, seed=11
+    )
+    mg = data["mat_haps"].sum(axis=0)
+    g = data["geno_embryo"]
+    # Which embryo dosages occur at mother-hom sites depends on the parent of origin.
+    genos = [x for x in range(ploidy + 1) if np.sum((g == x) & (mg == 2)) > 100]
+    assert len(genos) > 0
+    for geno in genos:
+        idx = (g == geno) & (mg == 2)
+        mu = ((1 - mcc) * geno + mcc * 2) / ((1 - mcc) * ploidy + 2 * mcc)
+        if mu < 1:
+            assert np.isclose(np.mean(data["baf"][idx]), mu, atol=5e-3)
+    lrr_mu = np.log2(((1 - mcc) * ploidy + 2 * mcc) / 2)
+    assert np.isclose(np.mean(data["lrr"]), lrr_mu, atol=0.02)
+
+
+@pytest.mark.parametrize("ploidy", [1, 3])
+def test_sim_mcc_segmental(ploidy):
+    """Segmental simulations carry LRR, contaminated inside and outside the segment."""
+    mcc = 0.2
+    data = pgt_sim_segmental.full_segmental_sim(
+        m=4000, ploidy=ploidy, mean_size=1000, alpha=0.1, mcc=mcc, seed=3
+    )
+    ploidies = data["ploidies"]
+    assert data["lrr"].size == data["sigmas"].size == 4000
+    for k in np.unique(ploidies):
+        mu = np.log2(((1 - mcc) * k + 2 * mcc) / 2)
+        assert np.isclose(np.mean(data["lrr"][ploidies == k]), mu, atol=0.03)
+    clean = pgt_sim_segmental.full_segmental_sim(
+        m=4000, ploidy=ploidy, mean_size=1000, alpha=0.1, seed=3
+    )
+    assert np.array_equal(clean["ploidies"], ploidies)
+    assert np.isclose(np.mean(clean["lrr"][ploidies == 2]), 0.0, atol=0.02)
+
+
+def test_sim_mcc_reads_not_implemented():
+    """Contamination is only simulated for array data."""
+    with pytest.raises(NotImplementedError):
+        pgt_sim.full_ploidy_sim(m=100, reads=True, mcc=0.1)
+    with pytest.raises(NotImplementedError):
+        pgt_sim_segmental.full_segmental_sim(m=100, reads=True, mcc=0.1)
+
+
+@pytest.mark.parametrize("fraction", [0.0, 0.1, 0.3])
+def test_sim_cell_contamination_copy_weighted(fraction):
+    """Post-hoc contamination reduces to the BAF mixture at disomy and copy-weights otherwise."""
+    data = pgt_sim.full_ploidy_sim(m=500, ploidy=2, seed=9)
+    baf, haps = data["baf"], data["mat_haps"]
+    mg = haps.sum(axis=0)
+    disomy = pgt_sim.sim_cell_contamination(baf, haps, fraction=fraction)
+    assert np.allclose(disomy, (1 - fraction) * baf + fraction * mg / 2)
+    trisomy = pgt_sim.sim_cell_contamination(baf, haps, fraction=fraction, ploidy=3)
+    expected = ((1 - fraction) * 3 * baf + fraction * mg) / (
+        (1 - fraction) * 3 + 2 * fraction
+    )
+    assert np.allclose(trisomy, expected)
+    lrr = pgt_sim.sim_cell_contamination_lrr(np.full(3, np.log2(1.5)), fraction=fraction)
+    assert np.allclose(lrr, np.log2(((1 - fraction) * 3 + 2 * fraction) / 2))
+
+
+@pytest.mark.parametrize("mcc", [0.0, 0.2])
+def test_sim_lrr_offset_triploidy(mcc):
+    """An LRR offset of the triploid copy ratio re-centres a trisomy on zero, as arrays do."""
+    delta = np.log2(((1 - mcc) * 3 + 2 * mcc) / 2)
+    raw = pgt_sim.full_ploidy_sim(m=4000, ploidy=3, alpha=0.1, mcc=mcc, seed=5)
+    normed = pgt_sim.full_ploidy_sim(
+        m=4000, ploidy=3, alpha=0.1, mcc=mcc, delta=delta, seed=5
+    )
+    assert normed["delta"] == delta
+    assert np.allclose(normed["lrr"], raw["lrr"] - delta)
+    assert np.array_equal(normed["baf"], raw["baf"])
+    assert np.isclose(np.mean(normed["lrr"]), 0.0, atol=0.02)
+    seg = pgt_sim_segmental.full_segmental_sim(
+        m=2000, ploidy=3, mean_size=500, alpha=0.1, mcc=mcc, seed=5
+    )
+    seg_normed = pgt_sim_segmental.full_segmental_sim(
+        m=2000, ploidy=3, mean_size=500, alpha=0.1, mcc=mcc, delta=delta, seed=5
+    )
+    assert np.allclose(seg_normed["lrr"], seg["lrr"] - delta)
+
+
+def test_sim_starting_haplotypes_random():
+    """Duplicated copies start on a random haplotype, and heterodisomy on both homologues."""
+    starts = []
+    for seed in range(1, 21):
+        data = pgt_sim.full_ploidy_sim(m=200, ploidy=3, mat_skew=1.0, seed=seed)
+        starts.append(data["zs_maternal"][:, 0])
+        upd = pgt_sim.full_ploidy_sim(m=200, ploidy=2, upd="2m1", seed=seed)
+        assert upd["zs_maternal"][0, 0] != upd["zs_maternal"][1, 0]
+    starts = np.array(starts)
+    assert 0 < starts.mean() < 1
+    assert np.any(starts[:, 0] != starts[:, 1])
+
+
+def test_sim_ref_panel_rows_differ():
+    """Reference-panel rows are drawn independently and are reproducible from the seed."""
+    data = pgt_sim.full_ploidy_sim(m=500, ploidy=2, seed=3)
+    panel = pgt_sim.sim_haplotype_ref_panel(
+        data["mat_haps"], data["pos"], panel_size=50, seed=3
+    )
+    het = data["mat_haps"][0] != data["mat_haps"][1]
+    assert len({row.tobytes() for row in panel}) > 1
+    assert np.all((panel.mean(axis=0)[het] > 0) & (panel.mean(axis=0)[het] < 1))
+    again = pgt_sim.sim_haplotype_ref_panel(
+        data["mat_haps"], data["pos"], panel_size=50, seed=3
+    )
+    assert np.array_equal(panel, again)

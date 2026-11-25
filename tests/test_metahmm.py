@@ -10,6 +10,8 @@ from karyohmm_utils import (
     create_index_arrays,
     forward_algo_reads,
     transition_kernel,
+    viterbi_algo_reads,
+    viterbi_recursion,
 )
 from scipy.special import logsumexp as logsumexp_sp
 
@@ -535,6 +537,215 @@ def test_forward_algorithm_reads_ploidy_correctness(ploidy):
     }
     assert max(post, key=post.get) == data["aploid"]
     assert post[data["aploid"]] > 0.95
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+def test_forward_backward_reads_matches_manual_composition(ploidy):
+    """The read-based wrapper is exactly the two passes combined by hand."""
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(
+        m=300, ploidy=ploidy, reads=True, coverage=10.0, rec_rate=1e-8, seed=42
+    )
+    kwargs = dict(
+        alt_reads=data["alt_reads"],
+        ref_reads=data["ref_reads"],
+        pos=data["pos"],
+        mat_haps=data["mat_haps"],
+        pat_haps=data["pat_haps"],
+        eps=1e-2,
+        coverage=10.0,
+        mismap_rate=1e-2,
+    )
+    gammas, states, karyotypes = hmm.forward_backward_reads(**kwargs)
+    alphas, _, _, _, _ = hmm.forward_algorithm_reads(**kwargs)
+    betas, _, _, _, _ = hmm.backward_algorithm_reads(**kwargs)
+    manual = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
+    assert np.array_equal(gammas, manual)
+    assert states == hmm.states
+    assert np.array_equal(karyotypes, hmm.karyotypes)
+    assert np.all(np.isclose(np.sum(np.exp(gammas), axis=0), 1.0))
+    post = hmm.posterior_karyotypes(gammas, karyotypes)
+    assert max(post, key=post.get) == data["aploid"]
+    assert post[data["aploid"]] > 0.95
+
+
+def ref_viterbi(emit, pos, karyotypes, r=1e-8, a=1e-2, unphased=0):
+    """Viterbi written straight from the textbook recursion, vectorised.
+
+    Independent of viterbi_recursion in the two places that engine used to be
+    wrong: site 0 is seeded with the prior *and* its emission, and the
+    traceback reads psi at column i + 1, because psi[j, i] is the best
+    predecessor of state j *at site i*.
+    """
+    m, n = emit.shape
+    K0, K1 = create_index_arrays(karyotypes)
+    deltas = np.zeros((m, n))
+    deltas[:, 0] = np.log(1.0 / m) + emit[:, 0]
+    psi = np.zeros((m, n), dtype=int)
+    for i in range(1, n):
+        di = np.float32(pos[i] - pos[i - 1])
+        A = transition_kernel(K0, K1, d=di, r=r, a=a, unphased=unphased)
+        tmp = deltas[:, i - 1][:, None] + A
+        deltas[:, i] = tmp.max(axis=0) + emit[:, i]
+        psi[:, i] = tmp.argmax(axis=0)
+    path = np.zeros(n, dtype=int)
+    path[-1] = int(np.argmax(deltas[:, -1]))
+    for i in range(n - 2, -1, -1):
+        path[i] = psi[path[i + 1], i + 1]
+    return path, deltas
+
+
+def path_logprob(path, emit, pos, karyotypes, r=1e-8, a=1e-2, unphased=0):
+    """Score a complete state path under the model, prior and emissions included."""
+    m, n = emit.shape
+    K0, K1 = create_index_arrays(karyotypes)
+    total = np.log(1.0 / m) + emit[path[0], 0]
+    for i in range(1, n):
+        di = np.float32(pos[i] - pos[i - 1])
+        A = transition_kernel(K0, K1, d=di, r=r, a=a, unphased=unphased)
+        total += A[path[i - 1], path[i]] + emit[path[i], i]
+    return total
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+@pytest.mark.parametrize("unphased", [0, 1])
+def test_viterbi_recursion_vs_reference(seed, unphased):
+    """The shared Viterbi recursion matches an independently written one.
+
+    Driven by a random emission matrix rather than simulated data: real data
+    puts one state so far ahead that the path never switches, and a traceback
+    that is off by one site looks identical to a correct one on a constant
+    path.
+    """
+    hmm = MetaHMM()
+    rng = np.random.default_rng(seed)
+    m, n = len(hmm.states), 60
+    emit = rng.normal(scale=5.0, size=(m, n))
+    pos = np.cumsum(rng.integers(1_000, 20_000, size=n))
+    path, deltas, psi = viterbi_recursion(emit, pos, hmm.karyotypes, unphased=unphased)
+    ref_path, ref_deltas = ref_viterbi(emit, pos, hmm.karyotypes, unphased=unphased)
+    assert np.array_equal(path, ref_path)
+    assert np.allclose(deltas, ref_deltas)
+    # The path actually switches, so the traceback is under test.
+    assert np.unique(path).size > 1
+    # deltas[:, -1] is the best complete path's log-probability by definition.
+    assert np.isclose(
+        deltas[:, -1].max(),
+        path_logprob(path, emit, pos, hmm.karyotypes, unphased=unphased),
+    )
+    assert psi.shape == (m, n)
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_viterbi_recursion_beats_perturbed_paths(seed):
+    """No single-site edit to the Viterbi path scores better than the path itself."""
+    hmm = MetaHMM()
+    rng = np.random.default_rng(seed)
+    m, n = len(hmm.states), 30
+    emit = rng.normal(scale=5.0, size=(m, n))
+    pos = np.cumsum(rng.integers(1_000, 20_000, size=n))
+    path, _, _ = viterbi_recursion(emit, pos, hmm.karyotypes)
+    best = path_logprob(path, emit, pos, hmm.karyotypes)
+    for i in range(n):
+        for j in range(m):
+            if j == path[i]:
+                continue
+            perturbed = path.copy()
+            perturbed[i] = j
+            assert path_logprob(perturbed, emit, pos, hmm.karyotypes) <= best + 1e-9
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+@pytest.mark.parametrize("unphased", [0, 1])
+def test_viterbi_algo_reads_vs_reference(ploidy, unphased):
+    """The read-based Viterbi is the shared recursion over the read emissions."""
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(
+        m=300, ploidy=ploidy, reads=True, coverage=10.0, rec_rate=1e-8, seed=42
+    )
+    kwargs = dict(eps=1e-2, coverage=10.0, mismap_rate=1e-2)
+    path, states, deltas, psi = viterbi_algo_reads(
+        data["alt_reads"],
+        data["ref_reads"],
+        data["pos"],
+        data["mat_haps"],
+        data["pat_haps"],
+        hmm.states,
+        hmm.karyotypes,
+        unphased=unphased,
+        **kwargs,
+    )
+    emit = build_emission_matrix_reads(
+        data["alt_reads"],
+        data["ref_reads"],
+        data["mat_haps"],
+        data["pat_haps"],
+        hmm.states,
+        **kwargs,
+    )
+    ref_path, ref_deltas = ref_viterbi(
+        emit, data["pos"], hmm.karyotypes, unphased=unphased
+    )
+    assert states == hmm.states
+    assert np.array_equal(path, ref_path)
+    assert np.allclose(deltas, ref_deltas)
+    assert psi.shape == emit.shape
+
+
+@pytest.mark.parametrize("ploidy", [0, 1, 2, 3])
+def test_viterbi_algorithm_reads_ploidy_correctness(ploidy):
+    """The read-based MAP path lands on the simulated karyotype.
+
+    rec_rate matches the model's own r for the reason given in
+    test_forward_algorithm_reads_ploidy_correctness.
+    """
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(
+        m=1000, ploidy=ploidy, reads=True, coverage=10.0, rec_rate=1e-8, seed=42
+    )
+    path, states, _, _ = hmm.viterbi_algorithm_reads(
+        alt_reads=data["alt_reads"],
+        ref_reads=data["ref_reads"],
+        pos=data["pos"],
+        mat_haps=data["mat_haps"],
+        pat_haps=data["pat_haps"],
+        eps=1e-2,
+        coverage=10.0,
+        mismap_rate=1e-2,
+    )
+    assert path.size == data["alt_reads"].size
+    assert np.all((path >= 0) & (path < len(states)))
+    called = hmm.karyotypes[path]
+    assert np.mean(called == data["aploid"]) > 0.95
+
+
+@pytest.mark.parametrize("ploidy", [1, 2, 3])
+def test_viterbi_algorithm_reads_agrees_with_posterior(ploidy):
+    """The MAP path and the smoothed posterior agree on the karyotype.
+
+    Viterbi maximises over whole paths and forward-backward marginalises per
+    site, so they answer different questions -- but on data this clean they
+    must not disagree, and a divergence would point at one of the two engines
+    running a different model.
+    """
+    hmm = MetaHMM()
+    data = pgt_sim.full_ploidy_sim(
+        m=500, ploidy=ploidy, reads=True, coverage=10.0, rec_rate=1e-8, seed=7
+    )
+    kwargs = dict(
+        alt_reads=data["alt_reads"],
+        ref_reads=data["ref_reads"],
+        pos=data["pos"],
+        mat_haps=data["mat_haps"],
+        pat_haps=data["pat_haps"],
+        eps=1e-2,
+        coverage=10.0,
+        mismap_rate=1e-2,
+    )
+    path, _, _, _ = hmm.viterbi_algorithm_reads(**kwargs)
+    gammas, _, karyotypes = hmm.forward_backward_reads(**kwargs)
+    marginal = karyotypes[np.argmax(gammas, axis=0)]
+    assert np.mean(karyotypes[path] == marginal) > 0.95
 
 
 @pytest.mark.parametrize("data", [data_disomy, data_trisomy, data_monosomy])

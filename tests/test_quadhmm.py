@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from scipy.special import logsumexp
 
 from karyohmm import PGTSim, QuadHMM
 
@@ -179,3 +180,33 @@ def test_flag_parental_genotype_errors(data):
     assert np.all(pat_err >= 0.0)
     assert np.all(np.isfinite(mat_err))
     assert np.all(np.isfinite(pat_err))
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_viterbi_algorithm_traceback(seed):
+    """The sibling Viterbi path follows its own backpointers and seeds site 0 with data.
+
+    The traceback once read psi at column i rather than i + 1, delaying the path
+    by a site, and site 0 was seeded with the prior alone. Driven by random BAFs
+    and haplotypes because simulated sibling data never leaves its starting
+    state, and an off-by-one traceback is invisible on a constant path.
+    """
+    hmm = QuadHMM()
+    rng = np.random.default_rng(seed)
+    n = 200
+    kwargs = dict(
+        bafs=[rng.uniform(size=n), rng.uniform(size=n)],
+        pos=np.cumsum(rng.integers(1_000, 20_000, size=n)),
+        mat_haps=rng.integers(0, 2, size=(2, n)),
+        pat_haps=rng.integers(0, 2, size=(2, n)),
+        r=1e-4,
+    )
+    path, _, deltas, psi = hmm.viterbi_algorithm(**kwargs)
+    # The path switches, so the traceback is under test.
+    assert np.unique(path).size > 1
+    assert path[-1] == np.argmax(deltas[:, -1])
+    for i in range(n - 1):
+        assert path[i] == psi[path[i + 1], i + 1]
+    # Site 0 carries the prior plus its emission, as in the forward pass.
+    alphas, _, _, _, _ = hmm.forward_algorithm(**kwargs)
+    assert np.allclose(deltas[:, 0] - logsumexp(deltas[:, 0]), alphas[:, 0])

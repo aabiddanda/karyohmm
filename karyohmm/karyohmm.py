@@ -52,6 +52,7 @@ from karyohmm_utils import (
     norm_logl,
     pat_dosage,
     viterbi_algo,
+    viterbi_algo_reads,
     viterbi_algo_sibs,
 )
 from scipy.optimize import brentq, minimize, minimize_scalar
@@ -495,7 +496,7 @@ class MetaHMM(AneuploidyHMM):
                     dtype=str,
                 )
 
-    def _warn_missing_lrr(self, lrrs):
+    def warn_missing_lrr(self, lrrs):
         """Warn when UPD states are active but LRR data is absent."""
         if self.aploid == "meta+upd" and np.all(lrrs == -9.0):
             warnings.warn(
@@ -506,6 +507,43 @@ class MetaHMM(AneuploidyHMM):
                 UserWarning,
                 stacklevel=3,
             )
+
+    def check_read_inputs(
+        self,
+        alt_reads,
+        ref_reads,
+        pos,
+        mat_haps,
+        pat_haps,
+        depths,
+        eps,
+        coverage,
+        mismap_rate,
+        r,
+        a,
+    ):
+        """Validate the arguments shared by the three read-level engines.
+
+        Kept in one place so the forward, backward and Viterbi read engines
+        cannot come to disagree about what constitutes valid input.
+        """
+        assert alt_reads.ndim == 1
+        assert ref_reads.ndim == 1
+        assert alt_reads.size == ref_reads.size
+        assert pos.ndim == 1
+        assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
+        assert alt_reads.size == mat_haps.shape[1]
+        assert alt_reads.size == pos.size
+        assert mat_haps.shape == pat_haps.shape
+        assert np.all(pos[1:] > pos[:-1])
+        assert r < 0.5 and r > 0
+        assert a < 0.5 and a > 0
+        assert (eps > 0) & (eps <= 0.5)
+        assert coverage > 0
+        assert mismap_rate >= 0
+        if depths is not None:
+            assert depths.ndim == 1
+            assert depths.size == alt_reads.size
 
     def forward_algorithm(
         self,
@@ -671,23 +709,19 @@ class MetaHMM(AneuploidyHMM):
             Total log-likelihood of the read counts.
 
         """
-        assert alt_reads.ndim == 1
-        assert ref_reads.ndim == 1
-        assert alt_reads.size == ref_reads.size
-        assert pos.ndim == 1
-        assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
-        assert alt_reads.size == mat_haps.shape[1]
-        assert alt_reads.size == pos.size
-        assert mat_haps.shape == pat_haps.shape
-        assert np.all(pos[1:] > pos[:-1])
-        assert r < 0.5 and r > 0
-        assert a < 0.5 and a > 0
-        assert (eps > 0) & (eps <= 0.5)
-        assert coverage > 0
-        assert mismap_rate >= 0
-        if depths is not None:
-            assert depths.ndim == 1
-            assert depths.size == alt_reads.size
+        self.check_read_inputs(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            depths,
+            eps,
+            coverage,
+            mismap_rate,
+            r,
+            a,
+        )
         alphas, scaler, _, _, loglik = forward_algo_reads(
             alt_reads,
             ref_reads,
@@ -868,23 +902,19 @@ class MetaHMM(AneuploidyHMM):
             Total log-likelihood of the read counts.
 
         """
-        assert alt_reads.ndim == 1
-        assert ref_reads.ndim == 1
-        assert alt_reads.size == ref_reads.size
-        assert pos.ndim == 1
-        assert (mat_haps.ndim == 2) & (pat_haps.ndim == 2)
-        assert alt_reads.size == mat_haps.shape[1]
-        assert alt_reads.size == pos.size
-        assert mat_haps.shape == pat_haps.shape
-        assert np.all(pos[1:] > pos[:-1])
-        assert r < 0.5 and r > 0
-        assert a < 0.5 and a > 0
-        assert (eps > 0) & (eps <= 0.5)
-        assert coverage > 0
-        assert mismap_rate >= 0
-        if depths is not None:
-            assert depths.ndim == 1
-            assert depths.size == alt_reads.size
+        self.check_read_inputs(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            depths,
+            eps,
+            coverage,
+            mismap_rate,
+            r,
+            a,
+        )
         betas, scaler, _, _, loglik = backward_algo_reads(
             alt_reads,
             ref_reads,
@@ -960,7 +990,7 @@ class MetaHMM(AneuploidyHMM):
             Array of karyotypes in the model.
 
         """
-        self._warn_missing_lrr(lrrs)
+        self.warn_missing_lrr(lrrs)
         alphas, _, states, karyotypes, _ = self.forward_algorithm(
             bafs,
             lrrs,
@@ -991,6 +1021,88 @@ class MetaHMM(AneuploidyHMM):
             mat_err=mat_err,
             pat_err=pat_err,
         )
+        gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
+        return gammas, states, karyotypes
+
+    def forward_backward_reads(
+        self,
+        alt_reads,
+        ref_reads,
+        pos,
+        mat_haps,
+        pat_haps,
+        depths=None,
+        eps=1e-2,
+        coverage=1.0,
+        mismap_rate=1e-2,
+        r=1e-8,
+        a=1e-2,
+        unphased=False,
+    ):
+        """Run the forward-backward algorithm on read-level (sequencing) data.
+
+        Read-based counterpart of :meth:`forward_backward`.  The smoothed
+        posterior it returns is the statistic to use for read data: the
+        forward variable alone is filtered, and the read emission is sharp
+        enough that its last column can sit confidently on the wrong state
+        when the assumed recombination rate is misspecified.
+
+        Parameters
+        ----------
+        alt_reads : np.ndarray
+            m-length array of alternate-allele read counts.
+        ref_reads : np.ndarray
+            m-length array of reference-allele read counts.
+        pos : np.ndarray
+            m-length vector of basepair positions for sites.
+        mat_haps : np.ndarray
+            A 2 x m array of 0/1 maternal haplotypes.
+        pat_haps : np.ndarray
+            A 2 x m array of 0/1 paternal haplotypes.
+        depths : np.ndarray, optional
+            m-length array of total read depths, defaulting to
+            ``alt_reads + ref_reads``.  Supply it to mask sites with the -9
+            sentinel, which no (alt, ref) pair can express.  A zero-depth site
+            is observed data and evidence for nullisomy, not a missing one.
+        eps : float
+            Per-read sequencing error rate.
+        coverage : float
+            Mean read depth at a disomic site.
+        mismap_rate : float
+            Background depth from mismapped reads, in copy-number units.
+        r : float
+            Intra-karyotype transition rate (recombination).
+        a : float
+            Inter-karyotype transition rate.
+        unphased : bool
+            Run the model in unphased mode.
+
+        Returns
+        -------
+        gammas : np.ndarray
+            Log posterior density of being in each of k hidden states.
+        states : list
+            Tuple representation of states.
+        karyotypes : np.ndarray
+            Array of karyotypes in the model.
+
+        """
+        kwargs = {
+            "alt_reads": alt_reads,
+            "ref_reads": ref_reads,
+            "pos": pos,
+            "mat_haps": mat_haps,
+            "pat_haps": pat_haps,
+            "depths": depths,
+            "eps": eps,
+            "coverage": coverage,
+            "mismap_rate": mismap_rate,
+            "r": r,
+            "a": a,
+            "unphased": unphased,
+        }
+        alphas, _, states, karyotypes, _ = self.forward_algorithm_reads(**kwargs)
+        betas, _, _, _, _ = self.backward_algorithm_reads(**kwargs)
         gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
         return gammas, states, karyotypes
 
@@ -1053,7 +1165,7 @@ class MetaHMM(AneuploidyHMM):
             Storage vector for psi variable.
 
         """
-        self._warn_missing_lrr(lrrs)
+        self.warn_missing_lrr(lrrs)
         assert bafs.ndim == 1
         assert lrrs.ndim == 1
         assert sigmas.ndim == 1
@@ -1085,6 +1197,101 @@ class MetaHMM(AneuploidyHMM):
             unphased=int(unphased),
             mat_err=mat_err,
             pat_err=pat_err,
+        )
+        return path, states, deltas, psi
+
+    def viterbi_algorithm_reads(
+        self,
+        alt_reads,
+        ref_reads,
+        pos,
+        mat_haps,
+        pat_haps,
+        depths=None,
+        eps=1e-2,
+        coverage=1.0,
+        mismap_rate=1e-2,
+        r=1e-8,
+        a=1e-2,
+        unphased=False,
+    ):
+        """Viterbi traceback through karyotypic states on read-level data.
+
+        Read-based counterpart of :meth:`viterbi_algorithm`.  Where
+        :meth:`forward_backward_reads` gives the per-site marginal posterior,
+        this gives the single most likely state path, which stays internally
+        consistent across sites.
+
+        Parameters
+        ----------
+        alt_reads : np.ndarray
+            m-length array of alternate-allele read counts.
+        ref_reads : np.ndarray
+            m-length array of reference-allele read counts.
+        pos : np.ndarray
+            m-length vector of basepair positions for sites.
+        mat_haps : np.ndarray
+            A 2 x m array of 0/1 maternal haplotypes.
+        pat_haps : np.ndarray
+            A 2 x m array of 0/1 paternal haplotypes.
+        depths : np.ndarray, optional
+            m-length array of total read depths, defaulting to
+            ``alt_reads + ref_reads``.  Supply it to mask sites with the -9
+            sentinel, which no (alt, ref) pair can express.  A zero-depth site
+            is observed data and evidence for nullisomy, not a missing one.
+        eps : float
+            Per-read sequencing error rate.
+        coverage : float
+            Mean read depth at a disomic site.
+        mismap_rate : float
+            Background depth from mismapped reads, in copy-number units.
+        r : float
+            Intra-karyotype transition rate (recombination).
+        a : float
+            Inter-karyotype transition rate.
+        unphased : bool
+            Run the model in unphased mode.
+
+        Returns
+        -------
+        path : np.ndarray
+            Most likely copying path through k states in the model.
+        states : list
+            Tuple representation of states.
+        deltas : np.ndarray
+            Delta variable (maximum path probability at step m).
+        psi : np.ndarray
+            Storage vector for psi variable.
+
+        """
+        self.check_read_inputs(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            depths,
+            eps,
+            coverage,
+            mismap_rate,
+            r,
+            a,
+        )
+        path, states, deltas, psi = viterbi_algo_reads(
+            alt_reads,
+            ref_reads,
+            pos,
+            mat_haps,
+            pat_haps,
+            self.states,
+            self.karyotypes,
+            depths=depths,
+            r=r,
+            a=a,
+            eps=eps,
+            coverage=coverage,
+            mismap_rate=mismap_rate,
+            unphased=int(unphased),
         )
         return path, states, deltas, psi
 
@@ -2146,18 +2353,19 @@ class PocHMM(MetaHMM):
     Extends :class:`MetaHMM` to handle mother–child or father–child duos in which
     only one parent's haplotypes are available.  The unobserved parent's genotype is
     marginalised out at each site using population allele frequencies supplied as
-    ``freqs``.  When ``freqs`` is ``None`` the model treats every unobserved-parent
-    site as a 50 / 50 heterozygote.
+    ``freqs``.  When ``freqs`` is ``None`` the forward and backward passes give
+    the three unobserved-parent genotypes equal prior weight at every site.
 
-    The forward, backward, and Viterbi algorithms are re-implemented here via a
-    dedicated Cython kernel (``forward_algo_duo`` / ``backward_algo_duo``) that
-    handles the marginalisation efficiently.
+    The forward and backward algorithms are re-implemented here via a dedicated
+    Cython kernel (``forward_algo_duo`` / ``backward_algo_duo``) that handles the
+    marginalisation efficiently.  The inherited Viterbi algorithm expects both
+    parents' haplotypes and does not apply to duos.
 
     Parameters
     ----------
     disomy : bool, optional
-        Restrict the state space to disomy (ignored in current implementation;
-        the full MetaHMM state space is always used).  Default ``False``.
+        Restrict the state space to disomy-only, as in :class:`MetaHMM`.
+        Default ``False``.
     upd : bool, optional
         Add uniparental disomy states to the state space.  As with
         :class:`MetaHMM`, LRR data helps distinguish UPD from normal disomy.
@@ -2210,6 +2418,8 @@ class PocHMM(MetaHMM):
             Bounds for acceptable values of pi0 parameter.
         sigma_bounds : tuple
             Bounds for acceptable values for sigma.
+        **kwargs
+            Passed to :meth:`forward_algorithm`.
 
         Returns
         -------
@@ -2268,6 +2478,8 @@ class PocHMM(MetaHMM):
         a=1e-2,
         unphased=False,
         obs_err=0.0,
+        mcc=0.0,
+        delta=0.0,
     ):
         """Forward algorithm for duos.
 
@@ -2294,11 +2506,15 @@ class PocHMM(MetaHMM):
         r : float
             Intra-karyotype transition rate (recombination).
         a : float
-            Inter-karyotype transition rate.
+            Scale on ``r`` giving the inter-karyotype transition rate.
         unphased : bool
-            Run the model in unphased mode.
+            Unused; kept for signature compatibility with :class:`MetaHMM`.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Sample-level LRR offset from array normalisation.
 
         Returns
         -------
@@ -2311,7 +2527,7 @@ class PocHMM(MetaHMM):
         karyotypes : np.ndarray
             Array of karyotypes in the MetaHMM model.
         loglik : float
-            Total log-likelihood of B-allele frequency.
+            Total log-likelihood of the BAF and LRR data.
 
         """
         assert bafs.ndim == 1
@@ -2329,6 +2545,7 @@ class PocHMM(MetaHMM):
         assert r < 0.5 and r > 0
         assert a < 0.5 and a > 0
         assert 0.0 <= obs_err < 0.5
+        assert 0.0 <= mcc < 1.0
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
@@ -2348,6 +2565,8 @@ class PocHMM(MetaHMM):
             pi0=pi0,
             std_dev=std_dev,
             obs_err=obs_err,
+            mcc=mcc,
+            delta=delta,
         )
         return alphas, scaler, self.states, self.karyotypes, loglik
 
@@ -2366,6 +2585,8 @@ class PocHMM(MetaHMM):
         a=1e-2,
         unphased=False,
         obs_err=0.0,
+        mcc=0.0,
+        delta=0.0,
     ):
         """Backward algorithm for duos.
 
@@ -2392,11 +2613,15 @@ class PocHMM(MetaHMM):
         r : float
             Intra-karyotype transition rate (recombination).
         a : float
-            Inter-karyotype transition rate.
+            Scale on ``r`` giving the inter-karyotype transition rate.
         unphased : bool
-            Run the model in unphased mode.
+            Unused; kept for signature compatibility with :class:`MetaHMM`.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Sample-level LRR offset from array normalisation.
 
         Returns
         -------
@@ -2409,7 +2634,7 @@ class PocHMM(MetaHMM):
         karyotypes : np.ndarray
             Array of karyotypes in the MetaHMM model.
         loglik : float
-            Total log-likelihood of B-allele frequency.
+            Total log-likelihood of the BAF and LRR data.
 
         """
         assert bafs.ndim == 1
@@ -2427,6 +2652,7 @@ class PocHMM(MetaHMM):
         assert r < 0.5 and r > 0
         assert a < 0.5 and a > 0
         assert 0.0 <= obs_err < 0.5
+        assert 0.0 <= mcc < 1.0
         if freqs is not None:
             assert freqs.size == bafs.size
         else:
@@ -2446,6 +2672,8 @@ class PocHMM(MetaHMM):
             pi0=pi0,
             std_dev=std_dev,
             obs_err=obs_err,
+            mcc=mcc,
+            delta=delta,
         )
         return betas, scaler, self.states, self.karyotypes, loglik
 
@@ -2464,6 +2692,8 @@ class PocHMM(MetaHMM):
         a=1e-2,
         unphased=False,
         obs_err=0.0,
+        mcc=0.0,
+        delta=0.0,
     ):
         """Forward-backward algorithm for duos.
 
@@ -2490,11 +2720,15 @@ class PocHMM(MetaHMM):
         r : float
             Intra-karyotype transition rate (recombination).
         a : float
-            Inter-karyotype transition rate.
+            Scale on ``r`` giving the inter-karyotype transition rate.
         unphased : bool
-            Run the model in unphased mode.
+            Unused; kept for signature compatibility with :class:`MetaHMM`.
         obs_err : float
             Per-site genotyping error rate for the observed parent.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Sample-level LRR offset from array normalisation.
 
         Returns
         -------
@@ -2520,6 +2754,8 @@ class PocHMM(MetaHMM):
             a=a,
             unphased=unphased,
             obs_err=obs_err,
+            mcc=mcc,
+            delta=delta,
         )
         betas, _, _, _, _ = self.backward_algorithm(
             bafs,
@@ -2535,9 +2771,430 @@ class PocHMM(MetaHMM):
             a=a,
             unphased=unphased,
             obs_err=obs_err,
+            mcc=mcc,
+            delta=delta,
         )
         gammas = (alphas + betas) - logsumexp_sp(alphas + betas, axis=0)
         return gammas, states, karyotypes
+
+    def genome_loglik(
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        pos,
+        haps,
+        freqs=None,
+        maternal=True,
+        pi0=0.2,
+        std_dev=0.25,
+        mcc=0.0,
+        delta=0.0,
+        **kwargs,
+    ):
+        """Total log-likelihood of a sample across chromosomes at a shared contamination fraction.
+
+        Each argument from ``bafs`` to ``freqs`` is a list with one entry per
+        chromosome, in the form :meth:`forward_algorithm` takes for one
+        chromosome. Every chromosome's likelihood is marginalised over all
+        karyotypes, so aneuploid chromosomes need no special treatment.
+
+        Parameters
+        ----------
+        bafs : list of np.ndarray
+            Per-chromosome B-allele frequencies.
+        lrrs : list of np.ndarray
+            Per-chromosome log-R ratios (-9 marks a missing value).
+        sigmas : list of np.ndarray
+            Per-chromosome per-probe LRR standard deviations.
+        pos : list of np.ndarray
+            Per-chromosome basepair positions.
+        haps : list of np.ndarray
+            Per-chromosome 2 x m haplotypes of the observed parent.
+        freqs : list of np.ndarray or None
+            Per-chromosome allele frequencies for the unobserved parent.
+        maternal : bool
+            If True, haps are maternal haplotypes; otherwise paternal.
+        pi0 : float
+            Point-mass weight of the BAF emission, shared across chromosomes.
+        std_dev : float
+            BAF noise, shared across chromosomes.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Sample-level LRR offset.
+        **kwargs
+            Passed to :meth:`forward_algorithm`.
+
+        Returns
+        -------
+        loglik : float
+            Sum of the per-chromosome forward log-likelihoods.
+
+        """
+        n = len(bafs)
+        assert len(lrrs) == n and len(sigmas) == n
+        assert len(pos) == n and len(haps) == n
+        if freqs is None:
+            freqs = [None] * n
+        assert len(freqs) == n
+        return sum(
+            self.forward_algorithm(
+                bafs=bafs[i],
+                lrrs=lrrs[i],
+                sigmas=sigmas[i],
+                pos=pos[i],
+                haps=haps[i],
+                freqs=freqs[i],
+                maternal=maternal,
+                pi0=pi0,
+                std_dev=std_dev,
+                mcc=mcc,
+                delta=delta,
+                **kwargs,
+            )[4]
+            for i in range(n)
+        )
+
+    def est_delta(
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        pos,
+        haps,
+        freqs=None,
+        maternal=True,
+        pi0=0.2,
+        std_dev=0.25,
+        mcc=0.0,
+        delta=0.0,
+        max_iter=20,
+        tol=1e-4,
+        **kwargs,
+    ):
+        """Estimate the sample-level LRR offset by expectation-maximization at a fixed contamination fraction.
+
+        Given the copy-number posteriors from forward-backward, the LRR term is
+        Gaussian in the offset, so the M-step is the precision-weighted mean
+        residual between the expected and observed LRR.
+
+        Parameters
+        ----------
+        bafs, lrrs, sigmas, pos, haps, freqs : list
+            Per-chromosome inputs, as in :meth:`genome_loglik`.
+        maternal : bool
+            If True, haps are maternal haplotypes; otherwise paternal.
+        pi0 : float
+            Point-mass weight of the BAF emission.
+        std_dev : float
+            BAF noise.
+        mcc : float
+            Fraction of maternal cells contaminating the sample.
+        delta : float
+            Starting value of the offset.
+        max_iter : int
+            Maximum number of EM iterations.
+        tol : float
+            Stop once the offset changes by less than this.
+        **kwargs
+            Passed to :meth:`forward_backward`.
+
+        Returns
+        -------
+        delta : float
+            Estimated LRR offset.
+        loglik : float
+            Total log-likelihood at the estimated offset.
+
+        """
+        assert max_iter > 0
+        n = len(bafs)
+        if freqs is None:
+            freqs = [None] * n
+        ks = np.array([sum(s >= 0 for s in state) for state in self.states])
+        uniq_ks = np.unique(ks)
+        # Expected LRR for each copy number in a contaminated sample, before the offset.
+        ratio = ((1.0 - mcc) * uniq_ks + 2.0 * mcc) / 2.0
+        mus = np.where(ratio <= 0.125, -3.0, np.log2(np.maximum(ratio, 0.125)))
+        for _ in range(max_iter):
+            num, den = 0.0, 0.0
+            for i in range(n):
+                gammas, _, _ = self.forward_backward(
+                    bafs=bafs[i],
+                    lrrs=lrrs[i],
+                    sigmas=sigmas[i],
+                    pos=pos[i],
+                    haps=haps[i],
+                    freqs=freqs[i],
+                    maternal=maternal,
+                    pi0=pi0,
+                    std_dev=std_dev,
+                    mcc=mcc,
+                    delta=delta,
+                    **kwargs,
+                )
+                post = np.exp(gammas)
+                # Posterior mass on each copy number at every site.
+                post_k = np.vstack([post[ks == k].sum(axis=0) for k in uniq_ks])
+                obs = lrrs[i] != -9
+                w = post_k[:, obs] / sigmas[i][obs] ** 2
+                num += np.sum(w * (mus[:, None] - lrrs[i][obs]))
+                den += np.sum(w)
+            if den == 0.0:
+                warnings.warn("No observed LRR values; the offset is left unchanged.")
+                break
+            new_delta = num / den
+            converged = abs(new_delta - delta) < tol
+            delta = new_delta
+            if converged:
+                break
+        loglik = self.genome_loglik(
+            bafs,
+            lrrs,
+            sigmas,
+            pos,
+            haps,
+            freqs,
+            maternal=maternal,
+            pi0=pi0,
+            std_dev=std_dev,
+            mcc=mcc,
+            delta=delta,
+            **kwargs,
+        )
+        return delta, loglik
+
+    def est_mcc_genome(
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        pos,
+        haps,
+        freqs=None,
+        maternal=True,
+        pi0=None,
+        std_dev=None,
+        delta=0.0,
+        mcc_bounds=(0.0, 0.5),
+        n_grid=11,
+        alpha=0.05,
+        thin=1,
+        **kwargs,
+    ):
+        """Estimate the maternal cell contamination fraction jointly across chromosomes.
+
+        Maximises :meth:`genome_loglik` over a grid of contamination fractions,
+        refines the best grid point with a bounded scalar search, and reports
+        a likelihood-ratio interval.  BAF noise and the point-mass weight are
+        shared across chromosomes; when not given they are estimated from the
+        pooled BAF with :meth:`est_sigma_pi0_baf`.
+
+        Parameters
+        ----------
+        bafs, lrrs, sigmas, pos, haps, freqs : list
+            Per-chromosome inputs, as in :meth:`genome_loglik`.
+        maternal : bool
+            If True, haps are maternal haplotypes; otherwise paternal.
+        pi0 : float or None
+            Point-mass weight of the BAF emission; estimated when None.
+        std_dev : float or None
+            BAF noise; estimated when None.
+        delta : float or None
+            LRR offset.  Fixed at the given value (0 for LRR relative to a
+            diploid reference), or estimated at every fraction by
+            :meth:`est_delta` when None.
+        mcc_bounds : tuple
+            Range of contamination fractions searched.
+        n_grid : int
+            Number of evenly spaced grid points over ``mcc_bounds``.
+        alpha : float
+            The interval has asymptotic coverage 1 - alpha.
+        thin : int
+            Fit on every ``thin``-th site of each chromosome (1 uses all
+            sites).  Run time falls roughly in proportion.  In simulations,
+            ``thin=10`` kept the error in the estimate close to that from
+            all sites, but the interval was about three times wider.
+        **kwargs
+            Passed to :meth:`genome_loglik` (or :meth:`est_delta` when the
+            offset is inferred).
+
+        Returns
+        -------
+        res : dict
+            ``mcc`` (estimate), ``mcc_ci`` (interval), ``delta``, ``pi0``,
+            ``std_dev``, ``loglik`` (at the estimate, on the sites used),
+            ``grid`` / ``grid_loglik`` (the profile over the grid), and ``thin``.
+
+        """
+        assert len(mcc_bounds) == 2
+        assert 0.0 <= mcc_bounds[0] < mcc_bounds[1] < 1.0
+        assert n_grid >= 3
+        assert 0.0 < alpha < 1.0
+        assert int(thin) == thin and thin >= 1
+        if thin > 1:
+            # Positions are kept, so transitions span the wider gaps between kept sites.
+            bafs, lrrs, sigmas, pos = (
+                [x[::thin] for x in v] for v in (bafs, lrrs, sigmas, pos)
+            )
+            haps = [h[:, ::thin] for h in haps]
+            if freqs is not None:
+                freqs = [None if f is None else f[::thin] for f in freqs]
+        if (pi0 is None) or (std_dev is None):
+            pi0_est, sigma_est = self.est_sigma_pi0_baf(np.concatenate(bafs))
+            pi0 = pi0_est if pi0 is None else pi0
+            std_dev = sigma_est if std_dev is None else std_dev
+        infer_delta = delta is None
+        shared = dict(maternal=maternal, pi0=pi0, std_dev=std_dev, **kwargs)
+        deltas = {}
+
+        def profile(f):
+            """Log-likelihood at fraction f, maximised over the offset when it is inferred."""
+            if not infer_delta:
+                return self.genome_loglik(
+                    bafs, lrrs, sigmas, pos, haps, freqs, mcc=f, delta=delta, **shared
+                )
+            # Warm-start from the offset at the nearest fraction already evaluated.
+            start = deltas[min(deltas, key=lambda g: abs(g - f))] if deltas else 0.0
+            deltas[f], ll = self.est_delta(
+                bafs, lrrs, sigmas, pos, haps, freqs, mcc=f, delta=start, **shared
+            )
+            return ll
+
+        grid = np.linspace(mcc_bounds[0], mcc_bounds[1], n_grid)
+        grid_ll = np.array([profile(f) for f in grid])
+        j = int(np.argmax(grid_ll))
+        lo, hi = grid[max(j - 1, 0)], grid[min(j + 1, n_grid - 1)]
+        opt = minimize_scalar(
+            lambda f: -profile(f),
+            bounds=(lo, hi),
+            method="bounded",
+            options={"xatol": 1e-3},
+        )
+        mcc_hat, ll_hat = (
+            (opt.x, -opt.fun) if -opt.fun > grid_ll[j] else (grid[j], grid_ll[j])
+        )
+        threshold = ll_hat - chi2.ppf(1.0 - alpha, df=1) / 2.0
+
+        def bound(side):
+            """Interval endpoint on one side of the estimate, bracketed by the grid."""
+            idx = np.where((grid < mcc_hat) if side < 0 else (grid > mcc_hat))[0]
+            below = idx[grid_ll[idx] < threshold]
+            if below.size == 0:
+                return mcc_bounds[0] if side < 0 else mcc_bounds[1]
+            edge = grid[below.max()] if side < 0 else grid[below.min()]
+            return brentq(
+                lambda f: profile(f) - threshold,
+                min(edge, mcc_hat),
+                max(edge, mcc_hat),
+                xtol=1e-3,
+            )
+
+        mcc_ci = (bound(-1), bound(1))
+        if infer_delta:
+            delta, ll_hat = self.est_delta(
+                bafs,
+                lrrs,
+                sigmas,
+                pos,
+                haps,
+                freqs,
+                mcc=mcc_hat,
+                delta=deltas[min(deltas, key=lambda g: abs(g - mcc_hat))],
+                **shared,
+            )
+        return {
+            "mcc": float(mcc_hat),
+            "mcc_ci": (float(mcc_ci[0]), float(mcc_ci[1])),
+            "delta": float(delta),
+            "pi0": float(pi0),
+            "std_dev": float(std_dev),
+            "loglik": float(ll_hat),
+            "grid": grid,
+            "grid_loglik": grid_ll,
+            "thin": int(thin),
+        }
+
+    def call_genome(
+        self,
+        bafs,
+        lrrs,
+        sigmas,
+        pos,
+        haps,
+        freqs=None,
+        maternal=True,
+        pi0=None,
+        std_dev=None,
+        delta=0.0,
+        thin=1,
+        **kwargs,
+    ):
+        """Estimate contamination across chromosomes, then call each chromosome at that estimate.
+
+        Runs :meth:`est_mcc_genome` and then :meth:`forward_backward` on every
+        chromosome at the estimated fraction and offset.  Arguments are as in
+        :meth:`est_mcc_genome`; extra keyword arguments go to both.
+
+        Parameters
+        ----------
+        thin : int
+            Estimate the contamination on every ``thin``-th site (see
+            :meth:`est_mcc_genome`).  Chromosomes are always called on all
+            sites.
+
+        Returns
+        -------
+        res : dict
+            The output of :meth:`est_mcc_genome`, plus ``posteriors`` (one
+            :meth:`posterior_karyotypes` dict per chromosome), ``calls`` (the
+            maximum-posterior karyotype per chromosome) and ``gammas``.
+
+        """
+        res = self.est_mcc_genome(
+            bafs,
+            lrrs,
+            sigmas,
+            pos,
+            haps,
+            freqs,
+            maternal=maternal,
+            pi0=pi0,
+            std_dev=std_dev,
+            delta=delta,
+            thin=thin,
+            **kwargs,
+        )
+        fb_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k not in ("mcc_bounds", "n_grid", "alpha")
+        }
+        n = len(bafs)
+        if freqs is None:
+            freqs = [None] * n
+        res["gammas"], res["posteriors"], res["calls"] = [], [], []
+        for i in range(n):
+            gammas, _, karyotypes = self.forward_backward(
+                bafs=bafs[i],
+                lrrs=lrrs[i],
+                sigmas=sigmas[i],
+                pos=pos[i],
+                haps=haps[i],
+                freqs=freqs[i],
+                maternal=maternal,
+                pi0=res["pi0"],
+                std_dev=res["std_dev"],
+                mcc=res["mcc"],
+                delta=res["delta"],
+                **fb_kwargs,
+            )
+            post = self.posterior_karyotypes(gammas, karyotypes)
+            res["gammas"].append(gammas)
+            res["posteriors"].append(post)
+            res["calls"].append(str(max(post, key=post.get)))
+        return res
 
     def genotype_parent(
         self,
@@ -2555,7 +3212,8 @@ class PocHMM(MetaHMM):
 
         For each site integrates the BAF and LRR likelihood over all four possible
         unobserved-parent genotypes (AA, AB, BA, BB), weighted by Hardy-Weinberg
-        priors from ``freqs`` and the HMM posterior ``gammas``.
+        priors from ``freqs`` and the HMM posterior ``gammas``.  The emissions
+        assume an uncontaminated sample with no LRR offset.
 
         Parameters
         ----------
@@ -2733,7 +3391,8 @@ class PocHMM(MetaHMM):
 
         va = np.array(valid_anchors)
 
-        def _af(anchor_site, query_site):
+        def af(anchor_site, query_site):
+            """Alt allele frequency at query_site among the haplotypes tagged at anchor_site."""
             return float(hap_matrix[tagged[anchor_site], query_site].mean())
 
         freqs = np.empty(m)
@@ -2743,20 +3402,20 @@ class PocHMM(MetaHMM):
 
             if left < 0:
                 # Before the first anchor: use first anchor's tagged haplotypes
-                freqs[k] = _af(int(va[0]), k)
+                freqs[k] = af(int(va[0]), k)
             elif right >= len(va):
                 # After the last anchor: use last anchor's tagged haplotypes
-                freqs[k] = _af(int(va[-1]), k)
+                freqs[k] = af(int(va[-1]), k)
             elif int(va[left]) == k:
                 # At an anchor site: use direct estimate from tagged haplotypes
-                freqs[k] = _af(k, k)
+                freqs[k] = af(k, k)
             else:
                 # Between two anchors: linear distance-weighted interpolation
                 i, j = int(va[left]), int(va[right])
                 d_ij = float(pos[j] - pos[i])
                 w_i = 1.0 - float(pos[k] - pos[i]) / d_ij
                 w_j = 1.0 - float(pos[j] - pos[k]) / d_ij
-                freqs[k] = w_i * _af(i, k) + w_j * _af(j, k)
+                freqs[k] = w_i * af(i, k) + w_j * af(j, k)
 
         return freqs
 
@@ -4107,15 +4766,15 @@ class MosaicEst:
         self.sigmas = sigmas
         self.mle_cf = None
 
-        self._baf_hets()
-        self._phase_hets(**phase_kwargs)
+        self.baf_hets()
+        self.phase_hets(**phase_kwargs)
         self.create_transition_matrix(switch_err=switch_err, t_rate=t_rate)
 
     # ------------------------------------------------------------------
     # Internal preprocessing
     # ------------------------------------------------------------------
 
-    def _baf_hets(self):
+    def baf_hets(self):
         """Identify expected-heterozygous sites and cache their BAF values."""
         mat_geno = np.sum(self.mat_haps, axis=0)
         pat_geno = np.sum(self.pat_haps, axis=0)
@@ -4128,7 +4787,7 @@ class MosaicEst:
         self.het_bafs = self.bafs[exp_het]
         self.n_het = self.het_bafs.size
 
-    def _phase_hets(self, **kwargs):
+    def phase_hets(self, **kwargs):
         """Phase BAF at expected-het sites via disomy MetaHMM Viterbi.
 
         sign = +1 when the maternal haplotype carries the alt allele, −1
@@ -4550,9 +5209,11 @@ class PhaseCorrect:
         hap_idx2 = np.ones(haps.shape[1], dtype=np.uint16)
         for i in np.arange(m - 1):
             # If majority have the same switch - we swap haplotypes ...
+            # n_mis[i] covers the interval (i, i+1), so the switch sits between
+            # them and site i belongs on the near side: the slice must be i + 1.
             if n_mis[i] > (n_sib / 2):
-                hap_idx1[:i] = 1 - hap_idx1[:i]
-                hap_idx2[:i] = 1 - hap_idx2[:i]
+                hap_idx1[: i + 1] = 1 - hap_idx1[: i + 1]
+                hap_idx2[: i + 1] = 1 - hap_idx2[: i + 1]
         fixed_hap1 = [haps[x, i] for i, x in enumerate(hap_idx1)]
         fixed_hap2 = [haps[x, i] for i, x in enumerate(hap_idx2)]
         fixed_haps = np.vstack([fixed_hap1, fixed_hap2])

@@ -394,3 +394,231 @@ def test_genotype_parent():
     col_sums = np.exp(geno_dosage).sum(axis=0)
     assert np.allclose(col_sums, 1.0, atol=1e-4)
     assert np.all((np.exp(geno_dosage) >= 0.0) & (np.exp(geno_dosage) <= 1.0 + 1e-10))
+
+
+# --- Maternal cell contamination (mcc) and the LRR offset (delta) --- #
+data_mcc_1p = pgt_sim.full_ploidy_sim(
+    m=2000,
+    ploidy=1,
+    mat_skew=1.0,
+    length=2e7,
+    rec_rate=1e-8,
+    std_dev=0.12,
+    mcc=0.3,
+    seed=1,
+)
+
+
+@pytest.mark.parametrize("maternal", [True, False])
+@pytest.mark.parametrize("obs_err", [0.0, 1e-2])
+@pytest.mark.parametrize("mcc,delta", [(0.15, 0.0), (0.3, 0.2)])
+def test_pochmm_fwd_bwd_mcc(maternal, obs_err, mcc, delta):
+    """Forward and backward log-likelihoods agree under contamination and an LRR offset."""
+    data = data_mat_trisomy
+    kwargs = {
+        "bafs": data["baf"],
+        "lrrs": data["lrr"],
+        "sigmas": data["sigmas"],
+        "pos": data["pos"],
+        "haps": data["mat_haps"] if maternal else data["pat_haps"],
+        "freqs": data["af"],
+        "maternal": maternal,
+        "obs_err": obs_err,
+        "mcc": mcc,
+        "delta": delta,
+    }
+    pochmm = PocHMM()
+    _, _, _, _, loglik = pochmm.forward_algorithm(**kwargs)
+    _, _, _, _, loglik2 = pochmm.backward_algorithm(**kwargs)
+    assert np.isclose(loglik, loglik2)
+    gammas, _, _ = pochmm.forward_backward(**kwargs)
+    assert np.allclose(np.exp(gammas).sum(axis=0), 1.0)
+
+
+@pytest.mark.parametrize("shift", [-0.3, 0.25])
+def test_pochmm_lrr_offset(shift):
+    """Shifting every LRR by -delta and setting the offset to delta leaves the likelihood unchanged."""
+    data = data_mat_trisomy
+    kwargs = {
+        "bafs": data["baf"],
+        "sigmas": data["sigmas"],
+        "pos": data["pos"],
+        "haps": data["mat_haps"],
+        "freqs": data["af"],
+        "mcc": 0.1,
+    }
+    pochmm = PocHMM()
+    *_, base = pochmm.forward_algorithm(lrrs=data["lrr"], delta=0.0, **kwargs)
+    *_, offset = pochmm.forward_algorithm(
+        lrrs=data["lrr"] - shift, delta=shift, **kwargs
+    )
+    *_, unmatched = pochmm.forward_algorithm(
+        lrrs=data["lrr"] - shift, delta=0.0, **kwargs
+    )
+    assert np.isclose(base, offset)
+    assert unmatched < base
+
+
+def test_pochmm_mcc_rescues_paternal_monosomy():
+    """With BAF alone, 30% MCC makes 1p look like 3p unless the model accounts for it."""
+    data = data_mcc_1p
+    m = data["baf"].size
+    kwargs = {
+        "bafs": data["baf"],
+        "lrrs": np.full(m, -9.0),
+        "sigmas": np.ones(m),
+        "pos": data["pos"],
+        "haps": data["mat_haps"],
+        "freqs": data["af"],
+        "pi0": 0.3,
+        "std_dev": 0.12,
+    }
+    pochmm = PocHMM()
+    naive = pochmm.posterior_karyotypes(*pochmm.forward_backward(**kwargs)[::2])
+    aware = pochmm.posterior_karyotypes(
+        *pochmm.forward_backward(mcc=data["mcc"], **kwargs)[::2]
+    )
+    assert max(naive, key=naive.get) == "3p"
+    assert max(aware, key=aware.get) == "1p"
+    assert aware["1p"] > 0.95
+
+
+# --- Genome-wide contamination estimation (est_mcc_genome / call_genome) --- #
+def sim_genome(fraction, plan, m=500, use_lrr=True, delta=0.0, seed=20):
+    """Simulate chromosomes sharing one contamination fraction, as per-chromosome lists."""
+    chroms = [
+        pgt_sim.full_ploidy_sim(
+            m=m,
+            ploidy=ploidy,
+            mat_skew=skew,
+            length=2e7,
+            rec_rate=1e-8,
+            std_dev=0.12,
+            alpha=0.1,
+            mcc=fraction,
+            delta=delta,
+            seed=seed + i,
+        )
+        for i, (ploidy, skew) in enumerate(plan)
+    ]
+    return {
+        "bafs": [c["baf"] for c in chroms],
+        "lrrs": [c["lrr"] if use_lrr else np.full(m, -9.0) for c in chroms],
+        "sigmas": [c["sigmas"] if use_lrr else np.ones(m) for c in chroms],
+        "pos": [c["pos"] for c in chroms],
+        "haps": [c["mat_haps"] for c in chroms],
+        "freqs": [c["af"] for c in chroms],
+    }
+
+
+# Three disomic chromosomes and one maternal trisomy.
+genome_plan = [(2, 0.5), (2, 0.5), (3, 1.0), (2, 0.5)]
+
+
+def test_genome_loglik_sums_chromosomes():
+    """The genome log-likelihood is the sum of per-chromosome forward log-likelihoods."""
+    data = sim_genome(0.1, genome_plan[:2])
+    pochmm = PocHMM()
+    total = pochmm.genome_loglik(mcc=0.1, delta=0.05, **data)
+    parts = [
+        pochmm.forward_algorithm(
+            bafs=data["bafs"][i],
+            lrrs=data["lrrs"][i],
+            sigmas=data["sigmas"][i],
+            pos=data["pos"][i],
+            haps=data["haps"][i],
+            freqs=data["freqs"][i],
+            mcc=0.1,
+            delta=0.05,
+        )[4]
+        for i in range(2)
+    ]
+    assert np.isclose(total, sum(parts))
+
+
+@pytest.mark.parametrize("use_lrr", [True, False], ids=["with_lrr", "no_lrr"])
+@pytest.mark.parametrize("fraction", [0.05, 0.15, 0.25])
+def test_est_mcc_genome_recovers_truth(fraction, use_lrr):
+    """The genome-wide estimate is close to the simulated fraction and lies inside its interval."""
+    data = sim_genome(fraction, genome_plan, use_lrr=use_lrr)
+    res = PocHMM().est_mcc_genome(**data)
+    lo, hi = res["mcc_ci"]
+    # BAF alone overestimates heavy contamination by ~0.01-0.02 at f = 0.25,
+    # from inferring genotypes and phase without LRR, so it gets more slack.
+    assert abs(res["mcc"] - fraction) < (0.03 if use_lrr else 0.05)
+    assert lo <= res["mcc"] <= hi
+    assert res["delta"] == 0.0
+
+
+def test_est_mcc_genome_interval_coverage():
+    """The 95% interval covers the simulated fraction in most replicates."""
+    pochmm = PocHMM()
+    covered = 0
+    for seed in range(20, 60, 8):
+        res = pochmm.est_mcc_genome(**sim_genome(0.15, genome_plan, seed=seed))
+        covered += res["mcc_ci"][0] <= 0.15 <= res["mcc_ci"][1]
+    # P(at least 4 of 5) is about 0.98 at the nominal 95% coverage.
+    assert covered >= 4
+
+
+def test_est_mcc_genome_uncontaminated():
+    """An uncontaminated sample is estimated at zero contamination."""
+    data = sim_genome(0.0, genome_plan)
+    res = PocHMM().est_mcc_genome(**data)
+    assert res["mcc"] == 0.0
+    assert res["mcc_ci"][0] == 0.0
+
+
+def test_est_mcc_genome_infers_offset():
+    """With delta=None the LRR offset is estimated, and the contamination estimate is unaffected by it."""
+    shifted = sim_genome(0.15, genome_plan, delta=0.2)
+    pochmm = PocHMM()
+    res = pochmm.est_mcc_genome(delta=None, **shifted)
+    assert abs(res["delta"] - 0.2) < 0.03
+    assert abs(res["mcc"] - 0.15) < 0.03
+    assert res["mcc_ci"][0] <= 0.15 <= res["mcc_ci"][1]
+    # Fixing the offset at zero when it is not biases the contamination estimate.
+    fixed = pochmm.est_mcc_genome(delta=0.0, **shifted)
+    assert fixed["mcc"] > res["mcc_ci"][1]
+
+
+def test_est_delta_at_true_fraction():
+    """The EM offset update recovers a simulated offset at the true contamination fraction."""
+    data = sim_genome(0.1, genome_plan, delta=-0.15)
+    delta, loglik = PocHMM().est_delta(mcc=0.1, delta=0.0, **data)
+    assert abs(delta + 0.15) < 0.03
+    assert np.isclose(loglik, PocHMM().genome_loglik(mcc=0.1, delta=delta, **data))
+
+
+def test_call_genome_without_known_contamination():
+    """call_genome rescues BAF-only calls at 30% MCC without being told the fraction."""
+    plan = [(2, 0.5), (1, 1.0), (2, 0.5), (3, 0.0)]
+    data = sim_genome(0.3, plan, m=1000, use_lrr=False)
+    res = PocHMM().call_genome(**data)
+    assert res["calls"] == ["2", "1p", "2", "3p"]
+    assert abs(res["mcc"] - 0.3) < 0.03
+    assert len(res["posteriors"]) == len(plan)
+
+
+def test_est_mcc_genome_thin_matches_thinned_input():
+    """thin=k gives the same fit as passing every k-th site directly."""
+    data = sim_genome(0.15, genome_plan, m=1000)
+    hmm = PocHMM()
+    res = hmm.est_mcc_genome(**data, thin=5)
+    thinned = {k: [x[..., ::5] for x in v] for k, v in data.items()}
+    ref = hmm.est_mcc_genome(**thinned)
+    assert res["thin"] == 5
+    assert np.isclose(res["mcc"], ref["mcc"])
+    assert np.isclose(res["loglik"], ref["loglik"])
+    assert abs(res["mcc"] - 0.15) < 0.03
+
+
+def test_call_genome_thin_calls_all_sites():
+    """call_genome estimates on thinned sites but calls every chromosome on all sites."""
+    plan = [(2, 0.5), (1, 1.0), (2, 0.5), (3, 0.0)]
+    data = sim_genome(0.3, plan, m=1000, use_lrr=False)
+    res = PocHMM().call_genome(**data, thin=4)
+    assert res["thin"] == 4
+    assert res["calls"] == ["2", "1p", "2", "3p"]
+    assert abs(res["mcc"] - 0.3) < 0.04
+    assert all(g.shape[1] == 1000 for g in res["gammas"])
